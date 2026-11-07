@@ -23,15 +23,21 @@ def get_screen():
     return None
 
 def extract_coords(screen):
-    """ตัดกรอบพิกัดและถอดรหัสตัวเลข (ตรวจจับหลายระดับแสงเพื่อความแม่นยำ)"""
+    """
+    ขยายจุดรับพิกัดให้ใหญ่ขึ้น ไม่ตกขอบ รองรับทั้งแนวนอนและแนวตั้ง
+    """
     if screen is None:
         return None
 
     h, w = screen.shape[:2]
+
+    # ขยายพื้นที่ Crop ให้กว้างขึ้นทั้งความสูงและความกว้าง
     if w > h:
-        roi = screen[200:280, 50:240]
+        # แนวนอน 1280x720: ขยายขอบเขตเป็น Y: 180-300, X: 40-270
+        roi = screen[180:300, 40:270]
     else:
-        roi = screen[50:240, 200:280]
+        # แนวตั้ง 720x1280: ขยายขอบเขตและหมุนภาพให้ตรง
+        roi = screen[40:270, 180:300]
         roi = cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
 
     if roi.size == 0:
@@ -40,9 +46,10 @@ def extract_coords(screen):
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
-    # ทดสอบ 2 ระดับแสง (180 และ 200) เพื่อไม่ให้หลุดเวลาแสงเปลี่ยน
     custom_cfg = r"--psm 6 -c tessedit_char_whitelist=0123456789,."
-    for th_val in [185, 205]:
+    
+    # ทดสอบฟิลเตอร์แสง 3 ระดับ เพื่อความติดง่ายในทุกสภาพสีพื้นหลัง
+    for th_val in [175, 195, 215]:
         _, thresh = cv2.threshold(resized, th_val, 255, cv2.THRESH_BINARY)
         raw_text = pytesseract.image_to_string(thresh, config=custom_cfg)
 
@@ -50,7 +57,8 @@ def extract_coords(screen):
         if len(matches) >= 2:
             try:
                 x, y = int(matches[0]), int(matches[1])
-                if 17000 <= x <= 18000 and 15000 <= y <= 16000:
+                # กรองค่าต้องอยู่ในเกาะ ไม่ให้หลุดไป 155xx ที่เพี้ยน
+                if 17400 <= x <= 17600 and 15250 <= y <= 15400:
                     return (x, y)
             except ValueError:
                 pass
@@ -59,7 +67,7 @@ def extract_coords(screen):
         if len(nums) >= 2:
             try:
                 x, y = int(nums[0]), int(nums[1])
-                if 17000 <= x <= 18000 and 15000 <= y <= 16000:
+                if 17400 <= x <= 17600 and 15250 <= y <= 15400:
                     return (x, y)
             except ValueError:
                 pass
@@ -72,21 +80,40 @@ JOY_CENTER_Y = 530
 JOY_RADIUS   = 145
 
 def walk_in_direction(angle_deg, duration_ms=450):
-    """เดินสั้น 360° สำรวจหาพิกัดตั้งต้นหรือเปลี่ยนมุมแสง"""
+    """เดินสั้น 360° สำรวจหาพิกัดตั้งต้น"""
     angle_rad = math.radians(angle_deg)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
     swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
     time.sleep(0.2)
 
-def walk_vector(dx, dy, duration_sec):
-    """เดินตามเวกเตอร์มุ่งหน้าสู่กล่อง"""
-    angle_rad = math.atan2(dx, dy)
-    target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
-    target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
-    duration_ms = int(duration_sec * 1000)
-    swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
-    time.sleep(0.2)
+def walk_square_step(dx, dy, dist):
+    """
+    ระบบเดินเป็นสี่เหลี่ยม (Grid Movement):
+    เลือกเดินแกนที่มีระยะห่างมากที่สุดตรงๆ ก่อน (0°, 90°, 180°, 270°)
+    """
+    duration = 1.8 if dist > 8.0 else 0.8
+
+    # เลือกเดินแกนที่ห่างมากกว่าก่อน
+    if abs(dx) >= abs(dy):
+        # เดินแกน X (ซ้าย หรือ ขวา)
+        if dx > 0:
+            angle = 90   # ขวา
+            axis_name = f"ขวา (X: +{dx})"
+        else:
+            angle = 270  # ซ้าย
+            axis_name = f"ซ้าย (X: {dx})"
+    else:
+        # เดินแกน Y (หน้า หรือ หลัง)
+        if dy > 0:
+            angle = 0    # ตรงไปข้างหน้า
+            axis_name = f"ตรงไปข้างหน้า (Y: +{dy})"
+        else:
+            angle = 180  # ถอยหลัง
+            axis_name = f"ถอยหลัง (Y: {dy})"
+
+    print(f"[->] เดินเป็นเส้นตรงสี่เหลี่ยม: มุ่งหน้าทาง {axis_name} เป็นเวลา {duration} วิ")
+    walk_in_direction(angle, duration_ms=int(duration * 1000))
 
 TARGET_CHEST = (17529, 15339)
 TIMEOUT_LIMIT = 60
@@ -96,20 +123,19 @@ DIRECTIONS = [0, 45, 90, 135, 180, 225, 270, 315]
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: เดินสำรวจ 360° -> คำนวณเดินยาว -> เป้าหมาย {TARGET_CHEST}")
-    print(f"[*] ตรวจจับพิกัดคลาดเคลื่อนอัตโนมัติ | พัก {STOP_DURATION} วิ ทุกช่วงก้าว")
+    print(f"[*] UtopiaFarmAI: ขยายกรอบพิกัด + เดินสี่เหลี่ยมฉาก 90°")
+    print(f"[*] พิกัดเป้าหมาย: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(3)
 
     not_found_start = None
     dir_index = 0
-    last_distance = None
 
     while True:
         scr = get_screen()
         pos = extract_coords(scr)
 
-        # 1. หากยังหาพิกัดไม่เจอ ใช้การเดิน 360° ก้าวสั้นเพื่อค้นหา
+        # 1. หากยังไม่พบพิกัด ใช้การเดินสั้น 360° เพื่อค้นหา
         if pos is None:
             if not_found_start is None:
                 not_found_start = time.time()
@@ -117,16 +143,16 @@ def main():
             elapsed = int(time.time() - not_found_start)
             current_dir = DIRECTIONS[dir_index % len(DIRECTIONS)]
             dir_index += 1
-            print(f"[?] กำลังหาทิศทาง 360°... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ก้าวทดสอบ {current_dir}°")
+            print(f"[?] สำรวจหาพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ก้าวทดสอบมุม {current_dir}°")
 
             if elapsed >= TIMEOUT_LIMIT:
-                print(f"\n[!] ไม่พบพิกัดต่อเนื่องเกิน {TIMEOUT_LIMIT} วิ -> หยุดการทำงานอัตโนมัติ")
+                print(f"\n[!] ไม่พบพิกัดต่อเนื่องเกิน {TIMEOUT_LIMIT} วิ -> หยุดอัตโนมัติ")
                 break
 
             walk_in_direction(current_dir, duration_ms=400)
             continue
 
-        # 2. อ่านพิกัดสำเร็จ -> รีเซ็ตตัวนับ Timeout
+        # 2. อ่านพิกัดสำเร็จ
         not_found_start = None
         cur_x, cur_y = pos
         
@@ -134,43 +160,23 @@ def main():
         dy = TARGET_CHEST[1] - cur_y
         dist = math.sqrt(dx**2 + dy**2)
 
-        # ตรวจสอบว่าพิกัดคลาดเคลื่อนหรือเดินออกห่างหรือไม่
-        drift_status = ""
-        if last_distance is not None:
-            if dist < last_distance:
-                drift_status = "[✓ เข้าใกล้ขึ้น]"
-            elif dist > last_distance:
-                drift_status = "[! คลาดเคลื่อน (ระยะเพิ่มขึ้น) -> คำนวณเวกเตอร์ใหม่]"
-            else:
-                drift_status = "[= อยู่จุดเดิม]"
-
         print("-" * 55)
-        print(f"[✓] พิกัด: ({cur_x}, {cur_y}) | ห่างกล่อง: {dist:.1f} หน่วย (dx={dx}, dy={dy}) {drift_status}")
-        print(f"[⏸] หยุดนิ่ง {STOP_DURATION} วินาที เพื่อประมวลผล...")
+        print(f"[✓] พิกัดปัจจุบัน: ({cur_x}, {cur_y}) | ห่างเป้าหมาย: {dist:.1f} หน่วย (dx={dx}, dy={dy})")
+        print(f"[⏸] หยุดนิ่ง {STOP_DURATION} วินาที รอคำนวณแกนสี่เหลี่ยม...")
 
-        # หยุดนิ่ง 2 วินาทีเพื่อให้ตัวละครหยุดสนิท
         time.sleep(STOP_DURATION)
 
-        # 3. ตรวจสอบเงื่อนไขถึงเป้าหมาย
+        # 3. ถึงเป้าหมาย
         if dist <= 3.0:
             print("\n" + "=" * 50)
-            print("[✓] ถึงตำแหน่งกล่องเรียบร้อยแล้ว!")
+            print("[✓] ถึงตำแหน่งหน้ากล่องเรียบร้อยแล้ว!")
             print("=" * 50)
             time.sleep(0.5)
-            tap(820, 430)  # แตะเปิดกล่อง
+            tap(820, 430)
             break
 
-        # 4. คำนวณระยะเดิน: ไกลใช้เดินยาว ใกล้ปรับเป็นก้าวสั้นป้องกันเดินเลย
-        if dist > 8.0:
-            step_time = 2.0  # เดินยาว
-            print(f"[->] คำนวณเสร็จสิ้น -> เดินยาว {step_time} วินาที...")
-        else:
-            step_time = 0.7  # ระยะประชิด ปรับเป็นก้าวสั้น
-            print(f"[->] ใกล้ถึงจุดหมาย -> เดินสั้น {step_time} วินาที ป้องกันเดินเลย...")
-
-        walk_vector(dx, dy, duration_sec=step_time)
-        last_distance = dist
+        # 4. สั่งเดินเป็นมุมฉากสี่เหลี่ยมตามแกนหลัก
+        walk_square_step(dx, dy, dist)
 
 if __name__ == "__main__":
     main()
-    
