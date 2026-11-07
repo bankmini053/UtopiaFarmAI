@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import subprocess
 import cv2
 import numpy as np
@@ -32,23 +33,73 @@ def match(screen, template, thr=0.48):
 def load_img(path):
     return cv2.imread(path) if os.path.exists(path) else None
 
-tpl_hand = load_img("icons/pickup_hand.png")
-tpl_pick = load_img("icons/pick_all.png")
+# โหลดไอคอน
+tpl_hand  = load_img("icons/pickup_hand.png")
+tpl_pick  = load_img("icons/pick_all.png")
+tpl_home  = load_img("icons/hearthstone.png")
 
+# โหลดรูปป้ายชื่อ
 tree_templates = []
 for name in ["tree_rubber.png", "tree_rubber2.png", "tree_target.png"]:
     img = load_img(f"icons/{name}")
     if img is not None:
         tree_templates.append(img)
 
+# พิกัดหน้าจอสำหรับจอ 1280x720
 attack_x, attack_y = 1100, 560
-JOY_X = 195
-JOY_Y_START = 520
-JOY_Y_END   = 350
+JOY_CENTER_X = 195
+JOY_CENTER_Y = 520
+JOY_RADIUS   = 160
+
+def walk_by_vector(dx, dy, duration_sec=1.5):
+    """
+    บังคับจอยสติ๊กเดินตามทิศทางเวกเตอร์ (dx, dy)
+    dx > 0 = ขวา, dx < 0 = ซ้าย
+    dy > 0 = หน้า/เหนือ, dy < 0 = หลัง/ใต้
+    """
+    angle_rad = math.atan2(dx, dy)
+    target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
+    target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
+    
+    duration_ms = int(duration_sec * 1000)
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
+    time.sleep(0.2)
 
 def walk_straight(duration_ms=800):
-    swipe(JOY_X, JOY_Y_START, JOY_X, JOY_Y_END, duration=duration_ms)
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
     time.sleep(0.2)
+
+def warp_and_move_to_spot():
+    """ขั้นตอนกดวาร์ป รอ 10 วินาที แล้วเดินจาก A ไป B"""
+    print("[*] เริ่มต้นภารกิจ: ค้นหาไอคอน Hearthstone เพื่อวาร์ป...")
+    
+    warped = False
+    for _ in range(5):
+        scr = get_screen()
+        pos_home = match(scr, tpl_home, thr=0.50)
+        if pos_home:
+            print(f"[✓] พบหินวาร์ปที่พิกัด ({pos_home[0]}, {pos_home[1]}) -> กดวาร์ปทันที")
+            tap(pos_home[0], pos_home[1])
+            warped = True
+            break
+        time.sleep(1.0)
+
+    if not warped:
+        print("[!] ไม่พบรูป hearthstone.png บนจอ -> แตะพิกัดลัดกระเป๋าสำรอง")
+        tap(1220, 60)
+
+    print("[*] กำลังรอดาวน์โหลดฉากวาร์ป 10 วินาที...")
+    time.sleep(10)
+
+    # ตัวละครมาหยุดอยู่ที่พิกัด A: (17514, 15323)
+    # ต้องการเดินไปยังพิกัด B: (17529, 15339)
+    # dx = +15, dy = +16
+    print("[->] ถึงจุดเกิด (17514, 15323) แล้ว! กำลังเดินนำทางไปยังพิกัดเป้าหมาย (17529, 15339)...")
+    
+    # เดินเฉียงไปตามเวกเตอร์ dx=15, dy=16 (ประมาณ 4 วินาที)
+    walk_by_vector(15, 16, duration_sec=4.0)
+    print("[✓] มาถึงบริเวณพิกัดเป้าหมายเรียบร้อยแล้ว!")
+    time.sleep(1.0)
 
 def has_target_name(screen):
     if screen is None:
@@ -83,46 +134,54 @@ def collect_items():
             tap(820, 430)
         time.sleep(0.7)
 
-print("=" * 50)
-print("[*] UtopiaFarmAI: ตีเช็กชื่อ -> ฟันจนหลอดสีหาย -> กดรูปมือ")
-print("=" * 50)
-time.sleep(2)
+def main():
+    print("=" * 55)
+    print("[*] UtopiaFarmAI: กดวาร์ป Hearthstone -> เดินจาก A ไป B -> ตัดต้นไม้")
+    print("=" * 55)
+    time.sleep(2)
 
-while True:
-    screen = get_screen()
-    if screen is None:
-        time.sleep(0.3)
-        continue
+    # 1. รันกระบวนการวาร์ปแล้วเดินไปยังพิกัดฟาร์ม
+    warp_and_move_to_spot()
 
-    pos_pick = match(screen, tpl_pick, thr=0.55)
-    if pos_pick:
-        tap(pos_pick[0], pos_pick[1])
-        time.sleep(1.0)
-        continue
+    # 2. เริ่มลูปฟาร์มตัดต้นไม้
+    while True:
+        screen = get_screen()
+        if screen is None:
+            time.sleep(0.3)
+            continue
 
-    tap(attack_x, attack_y)
-    time.sleep(0.4)
+        pos_pick = match(screen, tpl_pick, thr=0.55)
+        if pos_pick:
+            tap(pos_pick[0], pos_pick[1])
+            time.sleep(1.0)
+            continue
 
-    scr_chk = get_screen()
-    if has_target_name(scr_chk):
-        print("[✓] ขึ้นชื่อต้นไม้แล้ว! ฟันต่อเนื่องจนกว่าหลอดสีจะหาย...")
-        while True:
-            tap(attack_x, attack_y)
-            time.sleep(1.05)
+        # ตีเช็กชื่อต้นไม้
+        tap(attack_x, attack_y)
+        time.sleep(0.4)
 
-            scr_chopping = get_screen()
-            hp_alive = has_hp_bar(scr_chopping)
-            p_hand = match(scr_chopping, tpl_hand, thr=0.48)
-            p_pick = match(scr_chopping, tpl_pick, thr=0.52)
+        scr_chk = get_screen()
+        if has_target_name(scr_chk):
+            print("[✓] ขึ้นชื่อต้นไม้แล้ว! ฟันต่อเนื่องจนกว่าหลอดสีจะหาย...")
+            while True:
+                tap(attack_x, attack_y)
+                time.sleep(1.05)
 
-            if not hp_alive or p_hand or p_pick:
-                print("[+] หลอดสีข้างล่างหายไปแล้ว! สั่งหยุดตี")
-                time.sleep(0.5)
-                collect_items()
-                break
+                scr_chopping = get_screen()
+                hp_alive = has_hp_bar(scr_chopping)
+                p_hand = match(scr_chopping, tpl_hand, thr=0.48)
+                p_pick = match(scr_chopping, tpl_pick, thr=0.52)
 
-        print("[->] เก็บของเสร็จสิ้น เดินหน้าหาต้นต่อไป...")
-        walk_straight(1800)
-    else:
-        walk_straight(700)
-        
+                if not hp_alive or p_hand or p_pick:
+                    print("[+] หลอดสีข้างล่างหายไปแล้ว! หยุดตี")
+                    time.sleep(0.5)
+                    collect_items()
+                    break
+
+            print("[->] เก็บของเสร็จสิ้น เดินหน้าหาต้นต่อไป...")
+            walk_straight(1800)
+        else:
+            walk_straight(700)
+
+if __name__ == "__main__":
+    main()
