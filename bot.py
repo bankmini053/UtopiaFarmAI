@@ -8,22 +8,18 @@ ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
 
 def tap(x, y):
-    """ส่งคำสั่งแตะหน้าจอ"""
     subprocess.run(f"{ROOT_SU} -c 'input tap {x} {y}'", shell=True)
 
 def swipe(x1, y1, x2, y2, duration=250):
-    """ส่งคำสั่งลากนิ้ว"""
     subprocess.run(f"{ROOT_SU} -c 'input swipe {x1} {y1} {x2} {y2} {duration}'", shell=True)
 
 def get_screen():
-    """แคปภาพหน้าจอเกม"""
     subprocess.run(f"{ROOT_SU} -c 'screencap -p {TMP_PATH}'", shell=True)
     if os.path.exists(TMP_PATH):
         return cv2.imread(TMP_PATH)
     return None
 
 def match(screen, template, thr=0.45):
-    """ค้นหาตำแหน่งรูปภาพ"""
     if screen is None or template is None:
         return None
     res = cv2.matchTemplate(screen, template, cv2.TM_CCOEFF_NORMED)
@@ -36,12 +32,13 @@ def match(screen, template, thr=0.45):
 def load_img(path):
     return cv2.imread(path) if os.path.exists(path) else None
 
-# โหลดไอคอนระบบ
-tpl_hand  = load_img("icons/pickup_hand.png")
-tpl_pick  = load_img("icons/pick_all.png")
-tpl_home  = load_img("icons/hearthstone.png")
+# โหลดไอคอน
+tpl_hand     = load_img("icons/pickup_hand.png")
+tpl_pick     = load_img("icons/pick_all.png")
+tpl_home     = load_img("icons/hearthstone.png")
+tpl_hp_empty = load_img("icons/tree_hp_empty.png")  # รูปเลือดหมด
 
-# โหลดรูปป้ายชื่อ Rubber Tree ทุกเวอร์ชัน
+# โหลดรูปป้ายชื่อ Rubber Tree
 tree_templates = []
 for name in ["tree_rubber.png", "tree_rubber2.png", "tree_target.png"]:
     img = load_img(f"icons/{name}")
@@ -49,27 +46,23 @@ for name in ["tree_rubber.png", "tree_rubber2.png", "tree_target.png"]:
         tree_templates.append(img)
 
 def has_target_tree(screen):
-    """ตรวจดูว่ายังมีป้ายชื่อ Rubber Tree อยู่บนจอหรือไม่"""
     for tpl in tree_templates:
-        if match(screen, tpl, thr=0.42) is not None:
+        if match(screen, tpl, thr=0.40) is not None:
             return True
     return False
 
-# พิกัดหน้าจอ 1280x720
+# พิกัดสำหรับหน้าจอ 1280x720
 attack_x, attack_y = 1100, 560
 
-# พิกัดคันโยกเดินตรง
 JOY_X = 195
 JOY_Y_START = 520
 JOY_Y_END   = 350
 
 def walk_straight(duration_ms=1200):
-    """เดินตรงไปข้างหน้า"""
     swipe(JOY_X, JOY_Y_START, JOY_X, JOY_Y_END, duration=duration_ms)
     time.sleep(0.2)
 
 def is_bag_orange(screen):
-    """ตรวจจับแถบเตือนสีส้ม (กระเป๋าเต็ม/น้ำหนักเกิน)"""
     if screen is None:
         return False
     hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
@@ -78,22 +71,9 @@ def is_bag_orange(screen):
     mask = cv2.inRange(hsv, lower_orange, upper_orange)
     return np.sum(mask > 0) > 300
 
-def use_hearthstone(screen):
-    """กดวาร์ปกลับบ้านเมื่อกระเป๋าเต็ม"""
-    print("[!] กำลังกดหินวาร์ปกลับบ้าน (Hearthstone)...")
-    if tpl_home is not None:
-        pos_home = match(screen, tpl_home, thr=0.60)
-        if pos_home:
-            tap(pos_home[0], pos_home[1])
-            time.sleep(15)
-            return
-    # พิกัดลัดสำรองของไอคอนวาร์ป/กระเป๋า
-    tap(1220, 60)
-    time.sleep(10)
-
 def main():
     print("=" * 50)
-    print("[*] UtopiaFarmAI: รันระบบตัดจนเลือดหมด + กดเก็บของ + ตรวจกระเป๋า")
+    print("[*] UtopiaFarmAI: ล็อกเป้าฟันจนเลือดหมด ห้ามเดินหนี...")
     print("=" * 50)
     time.sleep(2)
 
@@ -103,43 +83,43 @@ def main():
             time.sleep(0.3)
             continue
 
-        # 1. เช็กปุ่ม Pick All ก่อนเสมอหากมีไอเทมตกค้าง
+        # 1. เช็กปุ่ม Pick All ก่อนเสมอถ้ามีของตก
         pos_pick = match(screen, tpl_pick, thr=0.55)
         if pos_pick:
-            print("[+] พบ Pick All ตกค้าง -> กดเก็บของ")
+            print("[+] พบ Pick All -> กดเก็บของ")
             tap(pos_pick[0], pos_pick[1])
             time.sleep(1.0)
             continue
 
-        # 2. แตะตี 1 ครั้งเพื่อเรียกป้ายชื่อเป้าหมาย
+        # 2. ตีกระตุ้น 1 ครั้งเพื่อเรียกชื่อ
         tap(attack_x, attack_y)
         time.sleep(0.5)
 
-        # 3. แคปหน้าจอเพื่อเช็กชื่อ
         scr_chk = get_screen()
         if has_target_tree(scr_chk):
-            print("[✓] ยืนยันเป้าหมาย Rubber Tree! ฟันต่อเนื่องจนเลือดหมด...")
+            print("[✓] ยืนยัน Rubber Tree! กำลังฟันจนเลือดหมด (ล็อกตัวห้ามเดิน)...")
             
-            # ฟันต่อเนื่องไปเรื่อยๆ จนกว่าต้นไม้จะล้ม (ตรวจพบปุ่มรูปมือ หรือ Pick All)
+            # ลูปฟันต่อเนื่อง ห้ามหลุดไปเดินเด็ดขาดจนกว่าจะพบเงื่อนไขเลือดหมด/ล้ม
             chopping = True
-            hit_count = 0
-            while chopping and hit_count < 30:
-                tap(attack_x, attack_y)
-                hit_count += 1
-                time.sleep(1.05)
+            miss_count = 0  # ตัวนับป้องกันชื่อกะพริบหายชั่วคราว
+            
+            while chopping:
+                # ฟันรัวๆ ชุดละ 3 ครั้งติดกันเพื่อความเร็วและไม่หลุดจังหวะ
+                for _ in range(3):
+                    tap(attack_x, attack_y)
+                    time.sleep(1.05)
 
                 scr_now = get_screen()
-                p_hand = match(scr_now, tpl_hand, thr=0.50)
-                p_pick = match(scr_now, tpl_pick, thr=0.55)
+                p_hand  = match(scr_now, tpl_hand, thr=0.48)
+                p_pick  = match(scr_now, tpl_pick, thr=0.55)
+                p_empty = match(scr_now, tpl_hp_empty, thr=0.55) if tpl_hp_empty is not None else None
 
-                # เลือดหมด / ต้นไม้ล้ม -> เข้าสู่ขั้นตอนกดเก็บของ
-                if p_hand or p_pick:
-                    print("[+] เลือดหมด/ต้นไม้ล้มแล้ว! กำลังกดเก็บของ...")
+                # ตรวจพบ: เลือดหมด หรือ ต้นไม้ล้ม (รูปมือ / Pick All)
+                if p_hand or p_pick or p_empty:
+                    print("[+] เลือดหมด/ต้นไม้ล้มแล้ว! เริ่มกดเก็บของ...")
                     
-                    # วนลูปแตะเก็บจนกว่าปุ่มรูปมือและ Pick All จะหายไป
-                    collecting = True
-                    collect_try = 0
-                    while collecting and collect_try < 5:
+                    # กดเก็บของจนกว่ารูปมือและ Pick All จะหายไป
+                    for _ in range(6):
                         if p_hand:
                             tap(p_hand[0], p_hand[1])
                         if p_pick:
@@ -147,29 +127,36 @@ def main():
                         time.sleep(0.8)
                         
                         scr_collect = get_screen()
-                        p_hand = match(scr_collect, tpl_hand, thr=0.50)
+                        p_hand = match(scr_collect, tpl_hand, thr=0.48)
                         p_pick = match(scr_collect, tpl_pick, thr=0.55)
                         if not p_hand and not p_pick:
-                            collecting = False
-                        collect_try += 1
+                            break
 
-                    print("[✓] เก็บของเสร็จสิ้น ป้ายชื่อต้นไม้หายไปแล้ว")
+                    print("[✓] เก็บของเรียบร้อย")
                     chopping = False
+                    break
 
-            # 4. ตรวจสอบสถานะสีกระเป๋าหลังเก็บของเสร็จสิ้น
+                # เช็กชื่อซ้ำ: ถ้าไม่เห็นชื่อ ให้ยอมให้พลาดได้ 4 ครั้งติดกัน (กันชื่อกะพริบ)
+                if not has_target_tree(scr_now):
+                    miss_count += 1
+                    if miss_count >= 4:
+                        print("[!] ป้ายชื่อหายไปต่อเนื่อง -> จบการฟันต้นนี้")
+                        chopping = False
+                else:
+                    miss_count = 0
+
+            # 3. เช็กสีกระเป๋าหลังฟันเสร็จ
             time.sleep(0.5)
-            scr_after_loot = get_screen()
-            if is_bag_orange(scr_after_loot):
-                print("[!] กระเป๋าขึ้นแถบสีส้ม (เต็มแล้ว) -> ทำการวาร์ปกลับบ้าน")
-                use_hearthstone(scr_after_loot)
-                print("[*] ภารกิจฟาร์มเสร็จสิ้น หยุดการทำงาน")
+            scr_after = get_screen()
+            if is_bag_orange(scr_after):
+                print("[!] กระเป๋าขึ้นสีส้ม (เต็ม) -> จบการทำงาน")
                 return
             else:
-                print("[✓] กระเป๋ายังเป็นสีเขียว (ยังมีที่ว่าง) -> เดินตรงไปหาต้นถัดไป")
-                walk_straight(1800)
+                print("[✓] กระเป๋ายังเขียว -> เดินตรงไปหาต้นถัดไป")
+                walk_straight(2000)
         else:
-            # ถ้าตีแล้วไม่มีชื่อ Rubber Tree ให้เดินหน้าอีกนิดเพื่อขยับหาเป้าหมาย
-            walk_straight(800)
+            # ถ้าตีแล้วยังไม่เจอชื่อ เดินขยับเข้าหาอีกนิด
+            walk_straight(700)
 
 if __name__ == "__main__":
     main()
