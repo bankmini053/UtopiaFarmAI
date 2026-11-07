@@ -1,8 +1,11 @@
 import os
+import re
 import time
+import math
 import subprocess
 import cv2
 import numpy as np
+import pytesseract
 
 ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
@@ -13,8 +16,7 @@ def run_cmd(cmd):
 def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
-def swipe(x1, y1, x2, y2, duration=350):
-    # ปรับ duration 350ms เพื่อให้ระบบเกมรับรู้ว่าเป็น gesture ลากหมุนกล้องจริง
+def swipe(x1, y1, x2, y2, duration=280):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
 
 def get_screen():
@@ -28,126 +30,156 @@ def get_screen():
             return img
     return None
 
-# โซนรูดหมุนกล้อง (ตามรอยทัชในคลิป X: 750 ถึง 1000, Y: 280)
-CAM_Y = 280
+def extract_coords(screen):
+    if screen is None:
+        return None
 
-def rotate_camera(direction="right", dist=240):
-    """รูดหมุนมุมกล้องรอบตัวแบบเดียวกับนิ้วผู้เล่นในวิดีโอ"""
-    if direction == "right":
-        # รูดจากขวาไปซ้าย -> กล้องหันไปทางขวา
-        swipe(920, CAM_Y, 920 - dist, CAM_Y, duration=320)
-    else:
-        # รูดจากซ้ายไปขวา -> กล้องหันไปทางซ้าย
-        swipe(720, CAM_Y, 720 + dist, CAM_Y, duration=320)
-    time.sleep(0.4)
+    h, w = screen.shape[:2]
+    roi = screen[180:300, 40:270]
+    if roi.size == 0:
+        return None
 
-# พิกัดจอยสติ๊กเดินแนวนอน 1280x720
-JOY_CENTER_X = 250
-JOY_CENTER_Y = 530
-JOY_RADIUS   = 140
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
-def walk_straight(duration_ms=650):
-    """ดันจอยสติ๊กตรงไปข้างหน้า (0 องศา) เดินเข้าชนกล่องตรงๆ"""
-    target_x = JOY_CENTER_X
-    target_y = JOY_CENTER_Y - JOY_RADIUS
-    swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
+    custom_cfg = r"--psm 6 -c tessedit_char_whitelist=0123456789,."
+    for th in [175, 195, 215]:
+        _, thresh = cv2.threshold(resized, th, 255, cv2.THRESH_BINARY)
+        matches = re.findall(r"\d{5}", pytesseract.image_to_string(thresh, config=custom_cfg))
+        if len(matches) >= 2:
+            try:
+                x, y = int(matches[0]), int(matches[1])
+                if 17300 <= x <= 17700 and 15200 <= y <= 15500:
+                    return (x, y)
+            except:
+                pass
+    return None
+
+def wait_coords(max_wait=3.5):
+    st = time.time()
+    last = None
+    while time.time() - st < max_wait:
+        c = extract_coords(get_screen())
+        if c is not None:
+            if c == last:
+                return c
+            last = c
+        time.sleep(0.25)
+    return last
+
+JOY_CENTER_X, JOY_CENTER_Y, JOY_RADIUS = 250, 530, 140
+
+def walk_straight(duration_ms=500):
+    """เดินตรงไปข้างหน้า (0 องศา) เข้าชนกล่อง"""
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
     time.sleep(0.2)
 
-def detect_chest(screen):
+def walk_by_angle(deg, duration_ms=400):
+    rad = math.radians(deg)
+    tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
+    ty = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(rad))
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
+    time.sleep(0.15)
+
+def rotate_camera_by_degree(deg):
     """
-    ตรวจจับกล่องสมบัติทั้งตอนเช้าและตอนค่ำ
-    คืนค่า: (พบกล่องไหม, กึ่งกลาง X ของกล่อง, ขนาดพื้นที่กล่อง)
+    รูดหมุนหน้าจอตามองศาที่คำนวณได้:
+    บนจอ 1280x720: รูดประมาณ 8.5 pixels = หมุนกล้อง 1 องศา
     """
-    if screen is None:
-        return False, 0, 0
+    cx, cy = 880, 280
+    px = int(abs(deg) * 8.5)
+    px = min(max(px, 50), 380)
 
-    # ตัดขอบจอส่วนล่างที่มีจอยสติ๊กและปุ่มสกิลออก
-    roi = screen[60:550, 100:1180]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    if deg > 0:
+        # หันขวา: ลากจากขวาไปซ้าย
+        swipe(cx, cy, cx - px, cy, duration=240)
+    else:
+        # หันซ้าย: ลากจากซ้ายไปขวา
+        swipe(cx - px, cy, cx, cy, duration=240)
+    time.sleep(0.35)
 
-    # 1. ช่วงสีส้มไม้ตอนเช้า
-    mask_day = cv2.inRange(hsv, np.array([6, 70, 70]), np.array([24, 255, 255]))
-    # 2. ช่วงสีน้ำตาลเข้มตอนค่ำ (เหมือนในคลิป)
-    mask_night = cv2.inRange(hsv, np.array([4, 25, 25]), np.array([28, 180, 140]))
-
-    mask = cv2.bitwise_or(mask_day, mask_night)
-    kernel = np.ones((5, 5), np.uint8)
-    clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    best_x = 0
-    max_area = 0
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 800:
-            x, y, cw, ch = cv2.boundingRect(cnt)
-            ratio = float(cw) / ch
-            if 0.55 <= ratio <= 1.8:
-                if area > max_area:
-                    max_area = area
-                    best_x = x + 100 + (cw // 2)
-
-    if max_area > 0:
-        return True, best_x, max_area
-
-    return False, 0, 0
-
-def check_interact_button(screen):
-    """ตรวจว่าปุ่มรูปมือเก็บของเด้งขึ้นมาหรือยัง (พิกัด X: 1010-1080, Y: 360-430)"""
-    # โซนปุ่มรูปมือเหนือปุ่มดาบ
-    hand_roi = screen[350:440, 1000:1090]
-    gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
-    # ปุ่มมือมีสีขาวสว่างชัดเจน
-    white_pixels = np.sum(gray > 200)
-    return white_pixels > 250
+TARGET_CHEST = (17527, 15336)
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ค้นหากล่อง -> หมุนมาตรงหน้า -> เดินตรงเข้าชน")
+    print("[*] UtopiaFarmAI: คำนวณพิกัดคน -> หมุนหน้าจอเข้าหากล่องตรงๆ")
+    print(f"[*] พิกัดกล่องคงที่: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
 
-    SCREEN_CENTER = 640  # กึ่งกลางหน้าจอ 1280
-    TOLERANCE = 80       # ขอบเขตตรงกลาง (560 ถึง 720)
+    # ขั้นที่ 1: วัดมุมกล้องปัจจุบันของคนเทียบกับทิศเหนือในแผนที่
+    print("[*] ก้าวสั้น 1 จังหวะเพื่อตรวจมุมหันหน้าปัจจุบันของคน...")
+    pos1 = wait_coords(max_wait=3.5)
+    walk_straight(duration_ms=450)
+    pos2 = wait_coords(max_wait=3.5)
+
+    if pos1 is None or pos2 is None or pos1 == pos2:
+        print("[!] อ่านพิกัดก้าวทดสอบไม่ติด สะกิดเดินใหม่...")
+        walk_by_angle(90, duration_ms=350)
+        pos2 = wait_coords(max_wait=3.0)
+
+    step_dx = pos2[0] - pos1[0]
+    step_dy = pos2[1] - pos1[1]
+    # มุมที่คนกำลังหันหน้าไป
+    current_facing_angle = math.atan2(step_dx, step_dy)
+    print(f"[✓] รู้ทิศหันหน้าของคนแล้ว (เวกเตอร์ก้าว: dx={step_dx:+d}, dy={step_dy:+d})")
 
     while True:
-        scr = get_screen()
-        if scr is None:
+        # อ่านพิกัดคนปัจจุบัน
+        cur_pos = wait_coords(max_wait=3.0)
+        if cur_pos is None:
             continue
 
-        # ตรวจสอบก่อนว่าเดินชนกล่องจนปุ่มรูปมือเด้งขึ้นมาหรือยัง
-        if check_interact_button(scr):
+        cur_x, cur_y = cur_pos
+        dx = TARGET_CHEST[0] - cur_x
+        dy = TARGET_CHEST[1] - cur_y
+        dist = math.sqrt(dx**2 + dy**2)
+
+        print("-" * 55)
+        print(f"[✓] คนอยู่ที่: ({cur_x}, {cur_y}) | ห่างจากกล่อง: {dist:.2f} หน่วย (dx={dx:+d}, dy={dy:+d})")
+
+        # -------------------------------------------------------------
+        # คำนวณองศาที่ต้องหมุนหน้าจอให้หันหน้าตรงเข้าหากล่อง
+        # -------------------------------------------------------------
+        target_angle = math.atan2(dx, dy)
+        turn_angle_rad = target_angle - current_facing_angle
+        turn_angle_deg = (math.degrees(turn_angle_rad) + 180) % 360 - 180
+
+        # ถ้าถึงระยะใกล้กล่องแล้ว (<= 3.0 หน่วย)
+        if dist <= 3.0:
             print("\n" + "=" * 50)
-            print("[🎯] ตรวจพบปุ่มรูปมือเปิดกล่องแล้ว! แตะเปิดกล่อง...")
-            print("=" * 50)
-            tap(1040, 390)
+            print(f"[🎯] อยู่ในระยะประชิดกล่องแล้ว! (ห่าง {dist:.2f} หน่วย)")
+            
+            # ถ้าหน้าจอยังไม่ตรงกล่อง ให้หมุนจอเข้าหากล่อง
+            if abs(turn_angle_deg) > 15:
+                print(f"[🔄] หมุนหน้าจอ {turn_angle_deg:+.1f}° เพื่อหันหน้าตรงเข้ากล่อง...")
+                rotate_camera_by_degree(turn_angle_deg)
+                current_facing_angle = target_angle
+                time.sleep(0.3)
+
+            # เดินตรงหน้า (0°) ชนกล่อง
+            print("[↑] เดินตรงไปข้างหน้า (0°) เข้าชนกล่อง...")
+            walk_straight(duration_ms=500)
             time.sleep(0.4)
-            tap(1040, 390)
+
+            # แตะปุ่มรูปมือเปิดกล่อง (พิกัดเหนือปุ่มดาบ)
+            print("[✓] แตะปุ่มรูปมือเปิดกล่อง (1050, 385)...")
+            tap(1050, 385)
+            time.sleep(0.3)
+            tap(1050, 385)
+            print("[✓] ภารกิจเปิดกล่องเสร็จสมบูรณ์!")
             break
 
-        found, chest_x, area = detect_chest(scr)
+        # ถ้ายังอยู่ห่างจากกล่อง (> 3.0 หน่วย): หันจอเข้าหากล่องแล้วเดินตรงหน้าเข้าไป
+        if abs(turn_angle_deg) > 20:
+            print(f"[🔄] ปรับหน้าจอให้หันไปทางกล่อง ({turn_angle_deg:+.1f}°)...")
+            rotate_camera_by_degree(turn_angle_deg)
+            current_facing_angle = target_angle
 
-        if found:
-            diff = chest_x - SCREEN_CENTER
-            print(f"[👁] เจอกล่องในจอ: พิกัด X={chest_x} (ขนาดวัตถุ: {area})")
-
-            # ถ้ากล่องยังไม่ตรงกลางจอ ให้รูดหมุนหน้าจอจัดกึ่งกลาง
-            if chest_x < (SCREEN_CENTER - TOLERANCE):
-                print("[<] กล่องอยู่ทางซ้าย -> หมุนกล้องซ้ายเพื่อจัดให้อยู่ตรงหน้า...")
-                rotate_camera("left", dist=130)
-            elif chest_x > (SCREEN_CENTER + TOLERANCE):
-                print("[>] กล่องอยู่ทางขวา -> หมุนกล้องขวาเพื่อจัดให้อยู่ตรงหน้า...")
-                rotate_camera("right", dist=130)
-            else:
-                # กล่องอยู่ตรงหน้าแล้ว -> ดันจอยสติ๊กตรงไปข้างหน้า (0 องศา) เดินเข้าหาเลย
-                print("[↑] กล่องอยู่ตรงหน้าพอดีแล้ว! เดินตรงไปข้างหน้า (0°)...")
-                walk_straight(duration_ms=550)
-        else:
-            # ถ้ายังไม่เจอกล่อง ให้หมุนกล้องกวาดค้นหา 360 องศา
-            print("[🔄] ยังไม่เจอกล่องในมุมมอง -> หมุนกล้องค้นหารอบตัว...")
-            rotate_camera("right", dist=220)
+        # เดินตรงไปหากล่อง
+        step_time = 2.0 if dist > 30 else (1.0 if dist > 10 else 0.5)
+        print(f"[->] เดินตรงเข้าหากล่อง {step_time} วินาที...")
+        walk_straight(duration_ms=int(step_time * 1000))
 
 if __name__ == "__main__":
     main()
