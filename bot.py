@@ -24,52 +24,54 @@ def get_screen():
 
 def extract_coords(screen):
     """
-    ตัดแถบพิกัดใต้ชื่อเกาะ No.6Archipelago ให้ตรงกับตำแหน่งจริง
+    ตัดเฉพาะแถวตัวเลขพิกัดใต้แผนที่มินิแมป (จอแนวนอน 1280x720)
+    Y: 228-265, X: 65-215 (ตรงตำแหน่งตัวเลข 17xxx, 15xxx พอดี)
     """
     if screen is None:
         return None
 
-    h, w = screen.shape[:2]
+    # ตัดเฉพาะบรรทัดตัวเลขพิกัด
+    coord_roi = screen[228:265, 65:215]
+
+    # บันทึกภาพล่าสุดไว้ตรวจสอบ
+    cv2.imwrite("/data/local/tmp/current_coord_box.png", coord_roi)
+
+    gray = cv2.cvtColor(coord_roi, cv2.COLOR_BGR2GRAY)
     
-    # กรณีรูปแคปมาในแนวตั้ง 720x1280
-    if h > w:
-        roi = screen[110:180, 420:530]
-        roi = cv2.rotate(roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    else:
-        roi = screen[260:340, 110:270]
+    # ดึงเฉพาะเนื้อสีขาวของตัวเลข (Value >= 200)
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    resized = cv2.resize(thresh, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_NEAREST)
 
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 205, 255, cv2.THRESH_BINARY)
-    resized = cv2.resize(thresh, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_LINEAR)
-
-    custom_cfg = r"--psm 6 -c tessedit_char_whitelist=0123456789,"
+    custom_cfg = r"--psm 7 -c tessedit_char_whitelist=0123456789,"
     raw_text = pytesseract.image_to_string(resized, config=custom_cfg)
 
+    # สกัดตัวเลข 5 หลัก
     matches = re.findall(r"\d{5}", raw_text)
     if len(matches) >= 2:
         try:
             x, y = int(matches[0]), int(matches[1])
-            if 17400 <= x <= 17600 and 15200 <= y <= 15400:
+            if 17000 <= x <= 18000 and 15000 <= y <= 16000:
                 return (x, y)
         except ValueError:
-            return None
+            pass
 
+    # กรณีมีจุลภาคคั่น
     parts = re.split(r"[, \n]+", raw_text.strip())
     valid_nums = [int(p) for p in parts if p.isdigit() and len(p) >= 4]
     if len(valid_nums) >= 2:
         x, y = valid_nums[0], valid_nums[1]
-        if 17400 <= x <= 17600 and 15200 <= y <= 15400:
+        if 17000 <= x <= 18000 and 15000 <= y <= 16000:
             return (x, y)
 
     return None
 
-# พิกัดจอยสติ๊กสำหรับจอ 1280x720
+# พิกัดกึ่งกลางปุ่มจอยสติ๊กสำหรับจอ 1280x720
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
 JOY_RADIUS   = 140
 
 def walk_by_direction(dx, dy, duration_sec=1.5):
-    """คำนวณเวกเตอร์และเดินตามทิศทาง"""
+    """เดินตามทิศทางเวกเตอร์ที่คำนวณได้"""
     angle_rad = math.atan2(dx, dy)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
@@ -78,17 +80,18 @@ def walk_by_direction(dx, dy, duration_sec=1.5):
     swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
     time.sleep(0.3)
 
-def walk_forward_step(duration_ms=600):
+def walk_forward_step(duration_ms=500):
     swipe(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
     time.sleep(0.3)
 
 TARGET_CHEST = (17529, 15339)
 TIMEOUT_LIMIT = 60
-STOP_DURATION = 15  # ตั้งเวลาหยุดนิ่ง 15 วินาที
+STOP_DURATION = 15  # หยุด 15 วินาทีเมื่ออ่านพิกัดได้
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: ล็อกพิกัด -> หยุด {STOP_DURATION} วิ -> เดินหากล่อง {TARGET_CHEST}")
+    print(f"[*] UtopiaFarmAI: แก้ไขตำแหน่งพิกัดตรงจุด -> เป้าหมาย {TARGET_CHEST}")
+    print(f"[*] ตั้งค่าหยุดนิ่ง {STOP_DURATION} วินาทีเมื่อจับพิกัดได้")
     print("=" * 60)
     time.sleep(3)
 
@@ -107,13 +110,13 @@ def main():
             print(f"[?] กำลังจับพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) ก้าวสั้นๆ เพื่อเปลี่ยนมุมแสง")
 
             if elapsed >= TIMEOUT_LIMIT:
-                print(f"\n[!] ไม่พบพิกัดครบ {TIMEOUT_LIMIT} วิ -> หยุดการทำงานอัตโนมัติ")
+                print(f"\n[!] ไม่พบพิกัดครบ {TIMEOUT_LIMIT} วิ -> หยุดทำงานอัตโนมัติ")
                 break
 
-            walk_forward_step(500)
+            walk_forward_step(400)
             continue
 
-        # เมื่ออ่านพิกัดเจอสำเร็จ
+        # อ่านพิกัดสำเร็จ
         not_found_start = None
         cur_x, cur_y = pos
         
@@ -137,10 +140,8 @@ def main():
             tap(820, 430)
             break
 
-        # ก้าวเดินตามทิศทางเวกเตอร์ที่คำนวณได้
-        print(f"[->] กำลังเดินตามเวกเตอร์เข้าหากล่อง...")
+        print(f"[->] กำลังเดินเข้าหากล่อง...")
         walk_by_direction(dx, dy, duration_sec=1.6)
 
 if __name__ == "__main__":
     main()
-        
