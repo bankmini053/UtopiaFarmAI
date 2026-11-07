@@ -24,37 +24,30 @@ def get_screen():
 
 def extract_coords(screen):
     """
-    ตัดกรอบพิกัด รองรับทั้งกรณีหน้าจอแนวนอนและภาพหมุนแนวตั้ง
+    ตัดกรอบพิกัด รองรับทั้งภาพแนวนอนและแนวตั้งที่หมุนมา
     """
     if screen is None:
         return None
 
     h, w = screen.shape[:2]
 
-    # ตรวจสอบทิศทางของเฟรมภาพ
     if w > h:
-        # แนวนอนปกติ (1280x720)
         roi = screen[200:280, 50:240]
     else:
-        # แนวตั้ง (720x1280) ต้องหมุนภาพให้ตรง
         roi = screen[50:240, 200:280]
         roi = cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
 
     if roi.size == 0:
         return None
 
-    # แปลงสีและปรับคอนทราสต์เพื่อดึงตัวเลขสีขาวออกจากฉากหลัง
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-    
-    # Threshold แยกสีขาวของตัวหนังสือ
     _, thresh = cv2.threshold(resized, 185, 255, cv2.THRESH_BINARY)
 
-    # อ่านตัวอักษรด้วยโหมด PSM 6 (บรรทัดข้อความคู่)
     custom_cfg = r"--psm 6 -c tessedit_char_whitelist=0123456789,."
     raw_text = pytesseract.image_to_string(thresh, config=custom_cfg)
 
-    # ค้นหาตัวเลขพิกัด 5 หลัก (เช่น 17484, 15313)
+    # ดึงตัวเลข 5 หลักช่วงเกาะ (17xxx, 15xxx)
     matches = re.findall(r"\d{5}", raw_text)
     if len(matches) >= 2:
         try:
@@ -64,7 +57,6 @@ def extract_coords(screen):
         except ValueError:
             pass
 
-    # กรณีเลขโดนคั่นด้วยเครื่องหมาย
     nums = re.findall(r"\d{4,6}", raw_text)
     if len(nums) >= 2:
         try:
@@ -76,38 +68,42 @@ def extract_coords(screen):
 
     return None
 
-# พิกัดกึ่งกลางปุ่มจอยสติ๊กสำหรับจอ 1280x720
+# พิกัดกึ่งกลางจอยสติ๊ก (1280x720)
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
-JOY_RADIUS   = 140
+JOY_RADIUS   = 145
 
 def walk_in_direction(angle_deg, duration_ms=450):
-    """ขยับจอยสติ๊กตามมุมองศา (0-360) เพื่อเปลี่ยนพื้นหลังและแสง"""
+    """ขยับสั้นๆ เพื่อเปลี่ยนมุมแสงเวลาหาพิกัดไม่เจอ"""
     angle_rad = math.radians(angle_deg)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
     swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
     time.sleep(0.2)
 
-def walk_by_vector(dx, dy, duration_sec=1.5):
-    """เดินมุ่งหน้าตามเวกเตอร์เข้าหากล่องเป้าหมาย"""
+def walk_continuous(dx, dy, duration_sec=2.8):
+    """
+    ลากจอยสติ๊กค้างเดินยาวๆ ตามเวกเตอร์
+    """
     angle_rad = math.atan2(dx, dy)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
     duration_ms = int(duration_sec * 1000)
+    
+    # ลากค้างเดินยาว
     swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
-    time.sleep(0.3)
+    time.sleep(0.2)
 
 TARGET_CHEST = (17529, 15339)
 TIMEOUT_LIMIT = 60
-STOP_DURATION = 15  # สั่งหยุด 15 วินาทีเมื่ออ่านพิกัดได้
+STOP_DURATION = 2  # ปรับเป็นหยุด 2 วินาที
 
 DIRECTIONS = [0, 45, 90, 135, 180, 225, 270, 315]
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: เดินสำรวจ 360° -> พิกัดเป้าหมายกล่อง {TARGET_CHEST}")
-    print(f"[*] เมื่อจับพิกัดได้ จะหยุดนิ่ง {STOP_DURATION} วิ เพื่อคำนวณทางเดิน")
+    print(f"[*] UtopiaFarmAI: ระบบเดินค้างยาว -> หยุด {STOP_DURATION} วิ เพื่อคำนวณ")
+    print(f"[*] เป้าหมายกล่อง: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(3)
 
@@ -126,13 +122,13 @@ def main():
             elapsed = int(time.time() - not_found_start)
             current_dir = DIRECTIONS[dir_index % len(DIRECTIONS)]
             dir_index += 1
-            print(f"[?] ไม่พบพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ก้าวเปลี่ยนมุมที่ {current_dir}°")
+            print(f"[?] ไม่พบพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ขยับมุมที่ {current_dir}°")
 
             if elapsed >= TIMEOUT_LIMIT:
                 print(f"\n[!] ไม่พบพิกัดครบ {TIMEOUT_LIMIT} วิ -> หยุดการทำงานอัตโนมัติ")
                 break
 
-            walk_in_direction(current_dir, duration_ms=450)
+            walk_in_direction(current_dir, duration_ms=400)
             continue
 
         # เมื่ออ่านพิกัดเจอสำเร็จ
@@ -143,26 +139,27 @@ def main():
         dy = TARGET_CHEST[1] - cur_y
         dist = math.sqrt(dx**2 + dy**2)
 
-        print("\n" + "=" * 50)
-        print(f"[✓] อ่านพิกัดสำเร็จ: ({cur_x}, {cur_y})")
-        print(f"[✓] ระยะห่างถึงกล่อง: {dist:.1f} หน่วย (dx={dx}, dy={dy})")
+        print("-" * 50)
+        print(f"[✓] อ่านพิกัดสำเร็จ: ({cur_x}, {cur_y}) | เหลือระยะห่าง: {dist:.1f} หน่วย (dx={dx}, dy={dy})")
         print(f"[⏸] หยุดนิ่ง {STOP_DURATION} วินาที เพื่อคำนวณทิศทาง...")
-        print("=" * 50)
 
-        # หยุดนิ่ง 15 วินาที
+        # หยุดนิ่ง 2 วินาทีเพื่อคำนวณ
         time.sleep(STOP_DURATION)
 
-        # ถ้าระยะห่างน้อยกว่า 3 หน่วย ถึงหน้ากล่องแล้ว
+        # ถ้าระยะห่างน้อยกว่าหรือเท่ากับ 3 หน่วย ถือว่าถึงจุดหมาย
         if dist <= 3.0:
-            print("[✓] ถึงตำแหน่งหน้ากล่องเรียบร้อยแล้ว!")
+            print("\n" + "=" * 50)
+            print("[✓] ถึงตำแหน่งกล่องเรียบร้อยแล้ว!")
+            print("=" * 50)
             time.sleep(0.5)
-            tap(820, 430)  # ปุ่มเปิดกล่อง
+            tap(820, 430)  # แตะเปิดกล่อง
             break
 
-        # คำนวณทิศทางและเดินเข้าหากล่อง
-        print(f"[->] กำลังเดินเข้าหากล่องตามเวกเตอร์ (dx={dx}, dy={dy})...")
-        walk_by_vector(dx, dy, duration_sec=1.6)
+        # ถ้าเหลือระยะใกล้ (ต่ำกว่า 15 หน่วย) ลดเวลาเดินเพื่อไม่ให้เดินเลย
+        step_duration = 1.2 if dist < 15.0 else 2.8
+
+        print(f"[->] เดินยาวค้างไว้ {step_duration} วิ มุ่งตรงหากล่อง...")
+        walk_continuous(dx, dy, duration_sec=step_duration)
 
 if __name__ == "__main__":
     main()
-    
