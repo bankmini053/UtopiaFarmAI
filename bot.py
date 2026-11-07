@@ -1,4 +1,4 @@
-cd ~/UtopiaFarmAI && cat << 'EOF' > bot.py
+
 import os, time, subprocess, cv2
 import numpy as np
 
