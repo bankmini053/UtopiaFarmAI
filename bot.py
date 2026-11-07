@@ -78,36 +78,32 @@ def walk_in_direction(angle_deg, duration_ms=300):
 
 def move_fixed_grid(diff_x, diff_y, duration_sec):
     """
-    แกนทิศทางตามมุมกล้องเกม:
-    - เพิ่ม X (+X) -> ดัน ซ้าย (270°)
-    - ลด X (-X)   -> ดัน ขวา (90°)
-    - เพิ่ม Y (+Y) -> ดัน ถอยหลัง (180°)
-    - ลด Y (-Y)   -> ดัน ไปข้างหน้า (0°)
+    ทิศทางจริงตามที่พิสูจน์จากหน้าจอ:
+    - diff_x > 0 (ต้องการเพิ่ม X) -> ดัน ขวา (90°)
+    - diff_x < 0 (ต้องการลด X)   -> ดัน ซ้าย (270°)
+    - diff_y > 0 (ต้องการเพิ่ม Y) -> ดัน หน้า (0°)
+    - diff_y < 0 (ต้องการลด Y)   -> ดัน หลัง (180°)
     """
-    # ล็อกเดินแกน X ก่อนจนกว่าจะตรงเป้าหมาย แล้วจึงเดินแกน Y
     if abs(diff_x) > 0:
         if diff_x > 0:
-            angle = 270
-            name = f"ซ้ายเพื่อเพิ่ม X ({diff_x:+d})"
-        else:
             angle = 90
-            name = f"ขวาเพื่อลด X ({diff_x:+d})"
+            name = f"ขวาเพื่อเพิ่ม X ({diff_x:+d})"
+        else:
+            angle = 270
+            name = f"ซ้ายเพื่อลด X ({diff_x:+d})"
     else:
         if diff_y > 0:
-            angle = 180
-            name = f"ถอยหลังเพื่อเพิ่ม Y ({diff_y:+d})"
-        else:
             angle = 0
-            name = f"ตรงไปข้างหน้าเพื่อลด Y ({diff_y:+d})"
+            name = f"ตรงไปข้างหน้าเพื่อเพิ่ม Y ({diff_y:+d})"
+        else:
+            angle = 180
+            name = f"ถอยหลังเพื่อลด Y ({diff_y:+d})"
 
     print(f"[->] ล็อกแกนเดิน: {name} เป็นเวลา {duration_sec:.2f} วิ")
     walk_in_direction(angle, duration_ms=int(duration_sec * 1000))
 
-def wait_and_settle_coords(max_wait=4.0):
-    """
-    วนอ่านค่าคำนวณตลอดเวลาช่วงหยุดนิ่ง:
-    เช็กจนกว่าพิกัดจะนิ่งสนิทตรงกัน 2 ครั้งติด แล้วคืนค่าทันที ไม่ต้องรอครบเวลา
-    """
+def wait_and_settle_coords(max_wait=3.5):
+    """วนอ่านพิกัดตลอดเวลาช่วงหยุดนิ่ง เช็กจนกว่าค่านิ่งตรงกัน 2 รอบ"""
     start_t = time.time()
     last_val = None
 
@@ -116,12 +112,11 @@ def wait_and_settle_coords(max_wait=4.0):
         curr_val = extract_coords(scr)
         
         if curr_val is not None:
-            # ถ้าพิกัดนิ่งตรงกัน 2 รอบติด แสดงว่าตัวละครหยุดสนิทแล้ว
             if curr_val == last_val:
                 return curr_val
             last_val = curr_val
             
-        time.sleep(0.3)
+        time.sleep(0.25)
 
     return last_val
 
@@ -131,7 +126,7 @@ DIRECTIONS = [0, 45, 90, 135, 180, 225, 270, 315]
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: คำนวณตลอดเวลาช่วงหยุดนิ่ง + ชิดพิกัดที่สุด")
+    print(f"[*] UtopiaFarmAI: แก้ไขทิศทางถูกต้องตรงเป้าหมาย")
     print(f"[*] พิกัดเป้าหมายกล่อง: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
@@ -140,10 +135,9 @@ def main():
     dir_index = 0
 
     while True:
-        # วนอ่านพิกัดอย่างต่อเนื่องช่วงหยุดนิ่ง (Active Polling)
         pos = wait_and_settle_coords(max_wait=3.5)
 
-        # 1. กรณีหาพิกัดไม่เจอ
+        # 1. หากหาพิกัดไม่เจอ
         if pos is None:
             if not_found_start is None:
                 not_found_start = time.time()
@@ -154,7 +148,7 @@ def main():
             print(f"[?] สำรวจหาพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ขยับมุม {current_dir}°")
 
             if elapsed >= TIMEOUT_LIMIT:
-                print(f"\n[!] ไม่พบพิกัดต่อเนื่องครบ {TIMEOUT_LIMIT} วิ -> สั่งหยุดการทำงาน")
+                print(f"\n[!] ไม่พบพิกัดต่อเนื่องครบ {TIMEOUT_LIMIT} วิ -> หยุดการทำงาน")
                 break
 
             walk_in_direction(current_dir, duration_ms=250)
@@ -172,31 +166,31 @@ def main():
         print(f"[✓] พิกัดนิ่ง: ({cur_x}, {cur_y}) | เป้าหมาย: {TARGET_CHEST}")
         print(f"[✓] ส่วนต่าง: diff_X = {diff_x:+d}, diff_Y = {diff_y:+d} (ห่าง {dist:.2f} หน่วย)")
 
-        # 3. เงื่อนไขถึงจุดหมาย: เข้าใกล้ที่สุด (ห่างไม่เกิน 1.0 หน่วย หรือตรงเป้าหมาย)
+        # 3. ถึงจุดหมายประชิดที่สุด (ห่างไม่เกิน 1.0 หน่วย หรือชนพิกัด)
         if dist <= 1.0 or (diff_x == 0 and diff_y == 0):
             print("\n" + "=" * 50)
             print(f"[✓] ถึงจุดหมายใกล้ที่สุดแล้ว! ({cur_x}, {cur_y})")
             print("[✓] แตะปุ่มรูปมือเปิดกล่องทันที...")
             print("=" * 50)
             time.sleep(0.4)
-            tap(820, 430)  # ปุ่มเปิดกล่อง
+            tap(820, 430)
             break
 
-        # 4. คำนวณระยะการเดิน
+        # 4. คำนวณความเร็วและระยะก้าว
         target_diff = abs(diff_x) if abs(diff_x) > 0 else abs(diff_y)
         
         if target_diff > 80:
-            step_duration = 3.5  # ระยะไกลมาก เดินยาว
+            step_duration = 3.5  # ระยะไกลมาก
         elif target_diff > 20:
-            step_duration = 1.6  # ระยะปานกลาง
+            step_duration = 1.5  # ระยะปานกลาง
         elif target_diff > 5:
             step_duration = 0.6  # เริ่มใกล้
         elif target_diff > 2:
             step_duration = 0.35 # ใกล้มาก
         else:
-            step_duration = 0.18 # ระยะประชิด 1-2 แต้ม สะกิดเบาๆ เพื่อให้เข้าใกล้ที่สุด
+            step_duration = 0.18 # ระยะ 1-2 แต้มสุดท้าย ค่อยๆ สะกิดเข้าหา
 
-        # 5. เดินตามแกน
+        # 5. เดินตามแกนที่แก้ไขทิศทางแล้ว
         move_fixed_grid(diff_x, diff_y, step_duration)
 
 if __name__ == "__main__":
