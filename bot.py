@@ -2,119 +2,83 @@ import os
 import time
 import subprocess
 import cv2
-import numpy as np
 
 ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
+DEBUG_OUT = "/data/local/tmp/screen_debug.png"
 
-def swipe_screen(x1, y1, x2, y2, duration=150):
-    """ส่งคำสั่งรูดหน้าจอผ่าน root shell โดยตรง"""
-    cmd = f"{ROOT_SU} -c 'input swipe {x1} {y1} {x2} {y2} {duration}'"
-    subprocess.run(cmd, shell=True)
+def run_cmd(cmd):
+    subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
 
 def get_screen():
-    """แคปภาพหน้าจอปัจจุบันและอ่านเข้า OpenCV"""
-    subprocess.run(f"{ROOT_SU} -c 'screencap -p {TMP_PATH}'", shell=True)
+    run_cmd(f"screencap -p {TMP_PATH}")
     if os.path.exists(TMP_PATH):
-        return cv2.imread(TMP_PATH)
+        img = cv2.imread(TMP_PATH)
+        h, w = img.shape[:2]
+        # บังคับให้อยู่ในระนาบแนวนอน 1280x720 เสมอ
+        if h > w:
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        return img
     return None
 
-def rotate_camera(direction="right", dist=120):
+def test_swipe_camera(direction="right", dist=200):
     """
-    รูดปรับมุมมองหน้าจอแนวนอน (1280x720):
-    ใช้พิกัดจุดรูดว่างฝั่งขวา (X: 920, Y: 360) ซึ่งเป็นพื้นที่หมุนมุมมองเกม
+    พิกัดโซนหมุนมุมมองที่ปลอดภัยที่สุดบนจอ 1280x720:
+    จุดศูนย์กลาง X: 900, Y: 320 (อยู่ฝั่งขวาบน ห่างจากปุ่มสกิลและจอยสติ๊ก)
     """
-    cx, cy = 920, 360
+    cx, cy = 900, 320
     if direction == "right":
-        # รูดจากขวาไปซ้าย -> มุมกล้องหันขวา
-        swipe_screen(cx, cy, cx - dist, cy, duration=140)
+        # รูดจากขวามาซ้าย -> กล้องหันขวา
+        cmd = f"input swipe {cx} {cy} {cx - dist} {cy} 200"
     else:
-        # รูดจากซ้ายไปขวา -> มุมกล้องหันซ้าย
-        swipe_screen(cx - dist, cy, cx, cy, duration=140)
-    time.sleep(0.1)
+        # รูดจากซ้ายไปขวา -> กล้องหันซ้าย
+        cmd = f"input swipe {cx - dist} {cy} {cx} {cy} 200"
+    
+    print(f"[*] กำลังส่งคำสั่งรูดจอ: {cmd}")
+    run_cmd(cmd)
 
-def detect_chest_continuous(screen):
-    """
-    ประมวลผลภาพแบบ Real-time หาวัตถุทรงกล่อง (รองรับทั้งเช้าและค่ำ)
-    คืนค่า: (เจอกล่องไหม, จุดกึ่งกลาง X ของกล่อง, ขนาดพื้นที่วัตถุ)
-    """
-    if screen is None:
-        return False, 0, 0
+def capture_and_mark_zones():
+    """แคปภาพพร้อมตีกรอบพิกัดสายตาและจุดรูดจอ เพื่อเอาไว้เปิดดูตรวจสอบ"""
+    img = get_screen()
+    if img is None:
+        print("[!] แคปภาพหน้าจอไม่สำเร็จ")
+        return
 
-    h, w = screen.shape[:2]
-    # ปรับภาพให้อยู่ในระนาบแนวนอน 1280x720 เสมอ
-    if h > w:
-        screen = cv2.rotate(screen, cv2.ROTATE_90_CLOCKWISE)
+    # 1. วาดกรอบพื้นที่สแกนหากล่อง (Zone มองเห็น: X 100-1180, Y 80-560)
+    cv2.rectangle(img, (100, 80), (1180, 560), (0, 255, 0), 2)
+    cv2.putText(img, "Vision Zone (Search Box)", (110, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    # ตัดเฉพาะพื้นที่สายตามองเห็นครึ่งบน-กลาง (ไม่เอาจอยสติ๊กและแถบสกิลล่าง)
-    roi = screen[80:560, 100:1180]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    # 2. วาดเส้นกึ่งกลางจอ (เส้นเล็งเป้า X=640)
+    cv2.line(img, (640, 0), (640, 720), (0, 0, 255), 2)
+    cv2.putText(img, "Center X=640", (650, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    # 1. ช่วงสีกล่องตอนเช้า (โทนสีส้มไม้/เหลืองทอง)
-    mask_day = cv2.inRange(hsv, np.array([6, 70, 70]), np.array([24, 255, 255]))
-    # 2. ช่วงสีกล่องตอนเย็น/ค่ำ (โทนสีน้ำตาลเข้มหม่น)
-    mask_night = cv2.inRange(hsv, np.array([4, 20, 20]), np.array([28, 180, 140]))
+    # 3. วาดจุดและแนวรูดหมุนกล้อง (จุด X=900, Y=320)
+    cv2.circle(img, (900, 320), 8, (255, 0, 0), -1)
+    cv2.line(img, (900, 320), (700, 320), (255, 0, 0), 2)
+    cv2.putText(img, "Camera Swipe Point (900, 320)", (720, 305), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
-    combined_mask = cv2.bitwise_or(mask_day, mask_night)
-    kernel = np.ones((5, 5), np.uint8)
-    clean_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-
-    contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    best_box = None
-    max_area = 0
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 800:  # ขนาดพื้นที่ของก้อนกล่อง
-            x, y, cw, ch = cv2.boundingRect(cnt)
-            aspect_ratio = float(cw) / ch
-            if 0.55 <= aspect_ratio <= 1.75:  # สัดส่วนก้อนสี่เหลี่ยม
-                if area > max_area:
-                    max_area = area
-                    best_box = (x + 100, y + 80, cw, ch)
-
-    if best_box is not None:
-        center_x = best_box[0] + (best_box[2] // 2)
-        return True, center_x, max_area
-
-    return False, 0, 0
+    # บันทึกไฟล์ภาพ
+    cv2.imwrite(DEBUG_OUT, img)
+    print(f"[✓] บันทึกภาพมาร์กพิกัดเรียบร้อยที่: {DEBUG_OUT}")
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: โหมดคำนวณภาพต่อเนื่อง + หมุนหันจอจัดกึ่งกลาง (ไม่เดิน)")
+    print("[*] ทดสอบพิกัดมองภาพเกม และพิกัดหันจอ (ไม่มีโค้ดเดิน)")
     print("=" * 60)
-    time.sleep(1.5)
+    time.sleep(1)
 
-    SCREEN_CENTER_X = 640  # กึ่งกลางหน้าจอแนวนอน 1280
-    TOLERANCE = 75         # ช่วงยอมรับกึ่งกลาง (565 ถึง 715)
+    print("\n1. แคปภาพและมาร์กจุดตำแหน่งมอง/หันจอ...")
+    capture_and_mark_zones()
 
-    while True:
-        # ดึงภาพหน้าจอมาคำนวณตลอดเวลา
-        frame = get_screen()
-        found, chest_x, area = detect_chest_continuous(frame)
+    print("\n2. ทดสอบรูดกล้องไปทางขวา (กวาด 200px)...")
+    test_swipe_camera("right", 200)
+    time.sleep(1)
 
-        if found:
-            diff_from_center = chest_x - SCREEN_CENTER_X
-            print(f"[👁] เจอกล่อง! พิกัด X={chest_x} (ห่างจากกลางจอ: {diff_from_center:+d}px, ขนาด: {area})")
+    print("\n3. ทดสอบรูดกล้องกลับไปทางซ้าย (กวาด 200px)...")
+    test_swipe_camera("left", 200)
+    time.sleep(1)
 
-            # ปรับระยะรูดจอตามระยะห่างจากกึ่งกลาง (ยิ่งไกลยิ่งรูดยาว ยิ่งใกล้ยิ่งสะกิดเบา)
-            swipe_step = min(max(int(abs(diff_from_center) * 0.45), 60), 160)
-
-            if chest_x < (SCREEN_CENTER_X - TOLERANCE):
-                print(f"[<] กล่องอยู่ฝั่งซ้าย -> กำลังหันจอไปทางซ้าย (ระยะรูด {swipe_step}px)")
-                rotate_camera("left", dist=swipe_step)
-            elif chest_x > (SCREEN_CENTER_X + TOLERANCE):
-                print(f"[>] กล่องอยู่ฝั่งขวา -> กำลังหันจอไปทางขวา (ระยะรูด {swipe_step}px)")
-                rotate_camera("right", dist=swipe_step)
-            else:
-                print(f"[🎯] กล่องอยู่ตรงกลางจอพอดีแล้ว! (X={chest_x}) -> ล็อกเป้าหมายนิ่ง")
-                time.sleep(0.3)
-        else:
-            # หากยังไม่พบกล่องในมุมมองปัจจุบัน ให้หมุนสำรวจรอบตัวทีละสเต็ป
-            print("[🔄] ยังไม่พบกล่องในมุมมอง -> กำลังหมุนสำรวจรอบตัว...")
-            rotate_camera("right", dist=180)
+    print("\n[✓] ทดสอบเสร็จสิ้น ไม่มีคำสั่งเดินใดๆ ทั้งสิ้น")
 
 if __name__ == "__main__":
     main()
-    
