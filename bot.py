@@ -21,31 +21,33 @@ def get_screen():
 
 def get_current_coordinates(screen):
     """
-    ตัดเฉพาะกรอบตัวหนังสือใต้แผนที่มินิแมป แล้วใช้ OCR อ่านค่าตัวเลขพิกัด (X, Y)
+    เจาะจงตัดเฉพาะแถวตัวเลขพิกัดใต้ชื่อเกาะ (Y: 285-330, X: 110-260)
+    และกรองเฉพาะตัวอักษรสีขาวสว่าง
     """
     if screen is None:
         return None
 
-    # ตัดกรอบใต้แผนที่ (Y: 265-335, X: 110-275) สำหรับจอ 1280x720
-    coord_roi = screen[265:335, 110:275]
+    # ตัดเฉพาะบรรทัดตัวเลขพิกัด (เลี่ยงชื่อ 1st Archipelago ด้านบน)
+    coord_roi = screen[285:330, 110:260]
 
-    # แปลงเป็นภาพขาว-ดำ และดึงเฉพาะสีขาวของตัวเลขให้อ่านง่าย
-    gray = cv2.cvtColor(coord_roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-    # ขยายขนาดภาพ 2 เท่าเพื่อให้ OCR อ่านตัวเลขแม่นยำขึ้น
-    resized = cv2.resize(thresh, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    # กรองเฉพาะเนื้อสีขาวของตัวหนังสือด้วย HSV
+    hsv = cv2.cvtColor(coord_roi, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([0, 0, 190])
+    upper_white = np.array([180, 50, 255])
+    mask = cv2.inRange(hsv, lower_white, upper_white)
 
-    # อ่านข้อความด้วย Tesseract
-    config = "--psm 6"
-    text = pytesseract.image_to_string(resized, config=config)
+    # ขยายภาพ 3 เท่าเพื่อให้เส้นตัวเลขหนาชัดเจนขึ้น
+    enlarged = cv2.resize(mask, (0, 0), fx=3, fy=3, interpolation=cv2.INTER_NEAREST)
 
-    # ค้นหาตัวเลขพิกัด เช่น 17514,15323 หรือ 17514.15323
+    # ตั้งค่า Tesseract ให้อ่านเฉพาะตัวเลขและจุด/คอมม่า
+    custom_config = r"--psm 7 -c tessedit_char_whitelist=0123456789.,"
+    text = pytesseract.image_to_string(enlarged, config=custom_config)
+
+    # สกัดตัวเลขชุดละ 4-6 หลัก (เช่น 17514 และ 15323 หรือ 1000)
     nums = re.findall(r"\d{3,6}", text)
     if len(nums) >= 2:
         try:
-            cur_x = int(nums[0])
-            cur_y = int(nums[1])
-            return (cur_x, cur_y)
+            return (int(nums[0]), int(nums[1]))
         except ValueError:
             return None
     return None
@@ -55,11 +57,11 @@ JOY_CENTER_X = 195
 JOY_CENTER_Y = 520
 JOY_RADIUS   = 160
 
-# กำหนดพิกัดเป้าหมาย (ตำแหน่งกล่อง)
+# พิกัดเป้าหมาย (ตำแหน่งกล่อง)
 TARGET_POS = (17529, 15339)
 
-def walk_step(dx, dy, duration_sec=1.5):
-    """ขยับเดินตามทิศทางเวกเตอร์ช่วงสั้นๆ"""
+def walk_step(dx, dy, duration_sec=1.2):
+    """ขยับเดินตามเวกเตอร์สั้นๆ"""
     angle_rad = math.atan2(dx, dy)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
@@ -70,7 +72,7 @@ def walk_step(dx, dy, duration_sec=1.5):
 
 def main():
     print("=" * 55)
-    print(f"[*] UtopiaFarmAI: ระบบอ่านพิกัดสดและเดินเข้าหาเป้าหมาย {TARGET_POS}")
+    print(f"[*] UtopiaFarmAI: ระบบอ่านพิกัด + เดินเข้าหากล่อง {TARGET_POS}")
     print("=" * 55)
     time.sleep(2)
 
@@ -82,11 +84,10 @@ def main():
             time.sleep(0.3)
             continue
 
-        # 1. อ่านพิกัดปัจจุบันจากใต้แผนที่
         pos = get_current_coordinates(screen)
         if pos is None:
-            print("[?] ไม่สามารถอ่านตัวเลขพิกัดได้ -> ขยับเดินตรงไปข้างหน้าเบาๆ เพื่ออัปเดตหน้าจอ...")
-            walk_step(0, 1, duration_sec=0.8)
+            print("[?] กำลังประมวลผลตัวเลขพิกัด...")
+            time.sleep(0.4)
             continue
 
         cur_x, cur_y = pos
@@ -94,27 +95,25 @@ def main():
         dy = TARGET_POS[1] - cur_y
         dist = math.sqrt(dx**2 + dy**2)
 
-        # 2. ตรวจสอบระยะห่างว่าเข้าใกล้เป้าหมายหรือไม่
-        status = ""
+        direction_status = ""
         if last_dist is not None:
             if dist < last_dist:
-                status = "[✓ กำลังไปถูกทาง]"
+                direction_status = "[✓ ถูกทาง]"
             elif dist > last_dist:
-                status = "[! กำลังเดินออกห่าง]"
+                direction_status = "[! กำลังเดินออกห่าง]"
             else:
-                status = "[= อยู่ตำแหน่งเดิม]"
+                direction_status = "[= อยู่จุดเดิม]"
 
-        print(f"[*] พิกัดปัจจุบัน: ({cur_x}, {cur_y}) | ระยะห่าง: {dist:.1f} หน่วย {status}")
+        print(f"[*] พิกัด: ({cur_x}, {cur_y}) | เหลือระยะ: {dist:.1f} {direction_status}")
         last_dist = dist
 
-        # 3. ถ้าระยะห่างน้อยกว่า 3 หน่วย ถือว่าถึงจุดหมายแล้ว
+        # ถ้าระยะห่างน้อยกว่า 3 หน่วย ถึงจุดหมาย
         if dist <= 3.0:
-            print("[✓] ถึงตำแหน่งเป้าหมายเรียบร้อยแล้ว!")
+            print("[✓] ถึงตำแหน่งกล่องเรียบร้อยแล้ว!")
             break
 
-        # 4. บังคับเดินเข้าหาพิกัดเป้าหมายทีละช่วง
+        # เดินเข้าหาพิกัด
         walk_step(dx, dy, duration_sec=1.2)
 
 if __name__ == "__main__":
     main()
-    
