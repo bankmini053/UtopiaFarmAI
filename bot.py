@@ -63,21 +63,25 @@ def get_live_distance():
 
 def rotate_camera_towards(diff):
     """
-    ดึงกล่องเข้ากึ่งกลางจอ:
-    diff < 0 (กล่องอยู่ซ้าย) -> รูดขวาไปซ้ายเพื่อหมุนรับ
-    diff > 0 (กล่องอยู่ขวา) -> รูดซ้ายไปขวา
+    แก้ทิศทางให้ถูกต้องตามฟิสิกส์มุมมอง 3D:
+    diff = chest_x - 640
+    - ถ้า diff < 0 (กล่องอยู่ซ้าย X < 640) -> ต้องหมุนมุมมองไปทางซ้าย ลากนิ้วจากซ้ายไปขวา (700 -> 700 + dist)
+    - ถ้า diff > 0 (กล่องอยู่ขวา X > 640) -> ต้องหมุนมุมมองไปทางขวา ลากนิ้วจากขวาไปซ้าย (900 -> 900 - dist)
     """
-    cx, cy = 850, 260
     dist = int(abs(diff) * 0.45)
-    dist = min(max(dist, 50), 180)
+    dist = min(max(dist, 50), 200)
 
+    cy = 260
     if diff < 0:
-        swipe_screen(cx, cy, cx - dist, cy, duration=220)
+        # กล่องอยู่ซ้าย -> ลากนิ้วไปทางขวา เพื่อดึงภาพฝั่งซ้ายเข้ามาตรงกลาง
+        swipe_screen(700, cy, 700 + dist, cy, duration=220)
     else:
-        swipe_screen(cx - dist, cy, cx, cy, duration=220)
+        # กล่องอยู่ขวา -> ลากนิ้วไปทางซ้าย เพื่อดึงภาพฝั่งขวาเข้ามาตรงกลาง
+        swipe_screen(900, cy, 900 - dist, cy, duration=220)
     time.sleep(0.4)
 
 def scan_rotate_right(dist=180):
+    """กวาดสายตาหมุนขวาทีละมุม"""
     cx, cy = 850, 260
     swipe_screen(cx, cy, cx - dist, cy, duration=250)
     time.sleep(0.45)
@@ -118,15 +122,15 @@ def check_hand_button(screen):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: กวาดหา -> เบรกนิ่ง -> จัดกึ่งกลาง -> เดินเช็กระยะห่าง")
+    print("[*] UtopiaFarmAI: กวาดหา -> เบรก -> ปรับจอซ้ายขวาเป๊ะ -> เดินชนเปิด")
     print(f"[*] พิกัดเป้าหมาย: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
 
     CENTER_X = 640
-    TOLERANCE = 40
+    TOLERANCE = 45
 
-    # 1. กวาดสายตา 360 องศา (เจอกล่องปุ๊บ เบรกหยุดทันที)
+    # 1. กวาดสายตา 360 องศา
     found_chest = False
     for step in range(8):
         scr = get_screen()
@@ -144,11 +148,11 @@ def main():
         print("\n[!] ไม่สำเร็จ: กวาดสายตาครบ 360 องศาแล้วไม่พบกล่อง")
         return
 
-    # 2. รอภาพนิ่งสนิท 2.0 วินาที
+    # 2. หยุดรอภาพนิ่งสนิท 2 วินาที
     print("[⏸] หยุดรอภาพนิ่งสนิท 2 วินาที...")
     time.sleep(2.0)
 
-    # 3. จัดให้กล่องอยู่กึ่งกลางจอเป๊ะๆ (X = 600 - 680)
+    # 3. จัดให้กล่องอยู่กึ่งกลางจอเป๊ะๆ
     aligned = False
     for attempt in range(8):
         still_scr = get_screen()
@@ -156,7 +160,7 @@ def main():
 
         if not still_found:
             print("[?] กำลังค้นหาตำแหน่งกล่องใหม่...")
-            scan_rotate_right(dist=80)
+            time.sleep(0.3)
             continue
 
         diff = still_x - CENTER_X
@@ -172,35 +176,27 @@ def main():
         print("\n[!] ไม่สำเร็จ: ไม่สามารถล็อกกล่องให้อยู่ตรงกลางจอได้")
         return
 
-    # 4. เดินตรงเข้าชนกล่องแบบเช็กระยะห่างจริง (ตรวจจับว่าเดินเข้าหาหรือเดินถอยหลัง)
+    # 4. เดินตรงเข้าชนกล่องแบบเช็กระยะห่างจริง
     print("\n" + "=" * 50)
-    print("[↑] เริ่มเดินตรงเข้าชนกล่อง (ระบบตรวจสอบระยะห่าง Real-time)...")
+    print("[↑] เริ่มเดินตรงเข้าชนกล่อง...")
     print("=" * 50)
 
-    start_pos, last_dist = get_live_distance()
-    print(f"[*] จุดเริ่มต้นเดิน: {start_pos} | ห่างจากกล่อง: {last_dist:.2f} หน่วย")
-
     opened = False
-    wrong_direction_count = 0
-
     for step in range(12):
         walk_straight(duration_ms=450)
-        time.sleep(0.2)
+        time.sleep(0.15)
 
         curr_scr = get_screen()
         pos, dist = get_live_distance()
 
-        # เช็กปุ่มรูปมือก่อนเสมอ
         if check_hand_button(curr_scr):
             print(f"\n[🎯] ตรวจพบปุ่มรูปมือแล้ว! (พิกัดคน: {pos}, ห่างกล่อง: {dist:.2f} หน่วย)")
-            print("[✓] แตะเปิดกล่องทันที...")
             tap(1045, 390)
             time.sleep(0.3)
             tap(1045, 390)
             opened = True
             break
 
-        # เช็กว่าถึงระยะประชิดกล่องแล้วหรือไม่ (<= 2.2 หน่วย)
         if dist <= 2.2:
             print(f"\n[🎯] ถึงระยะประชิดกล่องแล้ว! (พิกัดคน: {pos}, ห่าง: {dist:.2f} หน่วย)")
             time.sleep(0.3)
@@ -210,24 +206,13 @@ def main():
             opened = True
             break
 
-        # ตรวจสอบทิศทาง: ถ้าระยะห่างเพิ่มขึ้น แปลว่าเดินผิดทิศ
-        if pos is not None and dist > (last_dist + 1.5):
-            wrong_direction_count += 1
-            print(f"[⚠️] เดินผิดทาง! ระยะห่างเพิ่มขึ้น ({last_dist:.2f} -> {dist:.2f})")
-            if wrong_direction_count >= 2:
-                print("\n[!] ยกเลิกการเดิน: ตรวจพบว่าเดินหนีห่างจากกล่องเป้าหมายจริง")
-                break
-        else:
-            wrong_direction_count = 0
-
-        last_dist = dist
         print(f"[*] เดินเข้าหากล่อง (ก้าวที่ {step + 1}) | พิกัด: {pos} | ระยะห่าง: {dist:.2f}")
 
     if opened:
         print("\n[✓] ภารกิจเปิดกล่องเสร็จสมบูรณ์!")
     else:
         final_pos, final_dist = get_live_distance()
-        print(f"\n[!] ไม่สำเร็จ: ไม่สามารถเข้าถึงกล่องได้ (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
+        print(f"\n[!] ไม่สำเร็จ: เดินเข้าหากล่องไม่สำเร็จ (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
 
 if __name__ == "__main__":
     main()
