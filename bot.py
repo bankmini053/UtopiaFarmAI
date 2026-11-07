@@ -17,7 +17,7 @@ def run_cmd(cmd):
 def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
-def swipe_screen(x1, y1, x2, y2, duration=250):
+def swipe_screen(x1, y1, x2, y2, duration=220):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
 
 def get_screen():
@@ -51,9 +51,8 @@ def extract_coords(screen):
                 pass
     return None
 
-def get_live_distance():
-    scr = get_screen()
-    pos = extract_coords(scr)
+def get_live_distance(screen):
+    pos = extract_coords(screen)
     if pos is not None:
         dx = TARGET_CHEST[0] - pos[0]
         dy = TARGET_CHEST[1] - pos[1]
@@ -63,34 +62,30 @@ def get_live_distance():
 
 def rotate_camera_towards(diff):
     """
-    แก้ทิศทางให้ถูกต้องตามฟิสิกส์มุมมอง 3D:
-    diff = chest_x - 640
-    - ถ้า diff < 0 (กล่องอยู่ซ้าย X < 640) -> ต้องหมุนมุมมองไปทางซ้าย ลากนิ้วจากซ้ายไปขวา (700 -> 700 + dist)
-    - ถ้า diff > 0 (กล่องอยู่ขวา X > 640) -> ต้องหมุนมุมมองไปทางขวา ลากนิ้วจากขวาไปซ้าย (900 -> 900 - dist)
+    ปรับมุมกล้องแบบนุ่มนวล ไม่สะบัดแรง:
+    diff < 0 (กล่องอยู่ซ้าย) -> ลากซ้ายไปขวา
+    diff > 0 (กล่องอยู่ขวา) -> ลากขวาไปซ้าย
     """
-    dist = int(abs(diff) * 0.45)
-    dist = min(max(dist, 50), 200)
+    dist = int(abs(diff) * 0.28)  # ลดอัตราทดเพื่อกันไม่ให้สะบัดข้ามหัว
+    dist = min(max(dist, 35), 140)
 
     cy = 260
     if diff < 0:
-        # กล่องอยู่ซ้าย -> ลากนิ้วไปทางขวา เพื่อดึงภาพฝั่งซ้ายเข้ามาตรงกลาง
-        swipe_screen(700, cy, 700 + dist, cy, duration=220)
+        swipe_screen(750, cy, 750 + dist, cy, duration=200)
     else:
-        # กล่องอยู่ขวา -> ลากนิ้วไปทางซ้าย เพื่อดึงภาพฝั่งขวาเข้ามาตรงกลาง
-        swipe_screen(900, cy, 900 - dist, cy, duration=220)
-    time.sleep(0.4)
+        swipe_screen(850, cy, 850 - dist, cy, duration=200)
+    time.sleep(0.35)
 
-def scan_rotate_right(dist=180):
-    """กวาดสายตาหมุนขวาทีละมุม"""
+def scan_rotate_right(dist=160):
     cx, cy = 850, 260
-    swipe_screen(cx, cy, cx - dist, cy, duration=250)
-    time.sleep(0.45)
+    swipe_screen(cx, cy, cx - dist, cy, duration=220)
+    time.sleep(0.4)
 
 JOY_CENTER_X, JOY_CENTER_Y, JOY_RADIUS = 250, 530, 145
 
-def walk_straight(duration_ms=450):
+def walk_straight(duration_ms=400):
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
-    time.sleep(0.15)
+    time.sleep(0.1)
 
 def detect_chest(screen):
     if screen is None:
@@ -122,13 +117,13 @@ def check_hand_button(screen):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: กวาดหา -> เบรก -> ปรับจอซ้ายขวาเป๊ะ -> เดินชนเปิด")
+    print("[*] UtopiaFarmAI: เจอกล่อง -> พัก 5 วิ -> คำนวณภาพ+พิกัดสดตลอดเวลา")
     print(f"[*] พิกัดเป้าหมาย: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
 
     CENTER_X = 640
-    TOLERANCE = 45
+    TOLERANCE = 50
 
     # 1. กวาดสายตา 360 องศา
     found_chest = False
@@ -136,69 +131,68 @@ def main():
         scr = get_screen()
         found, chest_x, area = detect_chest(scr)
         if found:
-            print(f"\n[👁] ตรวจพบกล่องทันทีที่มุมสเต็ป {step + 1}/8! (X={chest_x}, ขนาด: {area:.1f})")
-            print("[🛑] สั่งเบรกหยุดหมุนหน้าจอทันที!")
+            print(f"\n[👁] ตรวจพบกล่องแล้วที่มุมสเต็ป {step + 1}/8! (X={chest_x}, ขนาด: {area:.1f})")
+            print("[🛑] สั่งหยุดนิ่งสนิททันที 5 วินาที เพื่อให้ภาพนิ่ง...")
             found_chest = True
             break
         else:
-            print(f"[🔄] กวาดสายตามุมที่ {step + 1}/8 -> หมุนต่อ...")
-            scan_rotate_right(dist=180)
+            print(f"[🔄] กวาดสายตามุมที่ {step + 1}/8 -> กำลังหมุนต่อ...")
+            scan_rotate_right(dist=160)
 
     if not found_chest:
         print("\n[!] ไม่สำเร็จ: กวาดสายตาครบ 360 องศาแล้วไม่พบกล่อง")
         return
 
-    # 2. หยุดรอภาพนิ่งสนิท 2 วินาที
-    print("[⏸] หยุดรอภาพนิ่งสนิท 2 วินาที...")
-    time.sleep(2.0)
+    # 2. หยุดนิ่งสนิท 5 วินาทีตามที่สั่ง
+    time.sleep(5.0)
 
-    # 3. จัดให้กล่องอยู่กึ่งกลางจอเป๊ะๆ
+    # 3. จัดกึ่งกลางรอบแรกให้กล่องเข้ามาอยู่ตรงหน้า
     aligned = False
     for attempt in range(8):
-        still_scr = get_screen()
-        still_found, still_x, _ = detect_chest(still_scr)
+        scr = get_screen()
+        found, chest_x, _ = detect_chest(scr)
 
-        if not still_found:
-            print("[?] กำลังค้นหาตำแหน่งกล่องใหม่...")
+        if not found:
+            print("[?] กำลังค้นหากล่องใหม่...")
             time.sleep(0.3)
             continue
 
-        diff = still_x - CENTER_X
+        diff = chest_x - CENTER_X
         if abs(diff) <= TOLERANCE:
-            print(f"\n[🎯] ล็อกกล่องกึ่งกลางจอเป๊ะแล้ว! (X={still_x}, คลาดเคลื่อน: {diff:+d}px)")
+            print(f"\n[🎯] ล็อกกล่องกึ่งกลางจอเป๊ะแล้ว! (X={chest_x}, ห่าง: {diff:+d}px)")
             aligned = True
             break
 
-        print(f"[*] กำลังจัดกลาง: กล่องอยู่ที่ X={still_x} (ห่างกลางจอ: {diff:+d})")
+        print(f"[*] จัดกึ่งกลาง: กล่องอยู่ที่ X={chest_x} (ห่าง: {diff:+d})")
         rotate_camera_towards(diff)
 
     if not aligned:
         print("\n[!] ไม่สำเร็จ: ไม่สามารถล็อกกล่องให้อยู่ตรงกลางจอได้")
         return
 
-    # 4. เดินตรงเข้าชนกล่องแบบเช็กระยะห่างจริง
+    # 4. ลูปเดินเข้าชน: คำนวณทั้งภาพจัดกลางจอ + พิกัดระยะห่าง ตลอดเวลาแบบ Real-time
     print("\n" + "=" * 50)
-    print("[↑] เริ่มเดินตรงเข้าชนกล่อง...")
+    print("[↑] เริ่มเดินเข้าหากล่อง (คำนวณภาพ + พิกัด สดทุกก้าว)...")
     print("=" * 50)
 
     opened = False
-    for step in range(12):
-        walk_straight(duration_ms=450)
-        time.sleep(0.15)
+    for step in range(15):
+        scr = get_screen()
+        pos, dist = get_live_distance(scr)
+        found, chest_x, _ = detect_chest(scr)
 
-        curr_scr = get_screen()
-        pos, dist = get_live_distance()
-
-        if check_hand_button(curr_scr):
-            print(f"\n[🎯] ตรวจพบปุ่มรูปมือแล้ว! (พิกัดคน: {pos}, ห่างกล่อง: {dist:.2f} หน่วย)")
+        # ก. ตรวจสอบปุ่มรูปมือ
+        if check_hand_button(scr):
+            print(f"\n[🎯] ตรวจพบปุ่มรูปมือแล้ว! (พิกัด: {pos}, ห่างกล่อง: {dist:.2f} หน่วย)")
             tap(1045, 390)
             time.sleep(0.3)
             tap(1045, 390)
             opened = True
             break
 
+        # ข. ตรวจสอบระยะพิกัดจริง
         if dist <= 2.2:
-            print(f"\n[🎯] ถึงระยะประชิดกล่องแล้ว! (พิกัดคน: {pos}, ห่าง: {dist:.2f} หน่วย)")
+            print(f"\n[🎯] ถึงระยะประชิดกล่องแล้ว! (พิกัด: {pos}, ห่าง: {dist:.2f} หน่วย)")
             time.sleep(0.3)
             tap(1045, 390)
             time.sleep(0.3)
@@ -206,13 +200,23 @@ def main():
             opened = True
             break
 
-        print(f"[*] เดินเข้าหากล่อง (ก้าวที่ {step + 1}) | พิกัด: {pos} | ระยะห่าง: {dist:.2f}")
+        # ค. คำนวณปรับหน้าจอสดระหว่างเดิน (ถ้าเดินแล้วกล่องเอียงออกจากกึ่งกลางจอ)
+        if found:
+            diff = chest_x - CENTER_X
+            if abs(diff) > TOLERANCE:
+                print(f"[🔄] ปรับมุมมองระหว่างเดิน: กล่องเอียง X={chest_x} ({diff:+d})")
+                rotate_camera_towards(diff)
+
+        # ง. เดินตรงไปข้างหน้า 1 จังหวะ
+        print(f"[*] ก้าวที่ {step + 1} | พิกัด: {pos} | ระยะห่าง: {dist:.2f} หน่วย | กล่อง X={chest_x if found else '?'}")
+        walk_straight(duration_ms=450)
 
     if opened:
         print("\n[✓] ภารกิจเปิดกล่องเสร็จสมบูรณ์!")
     else:
-        final_pos, final_dist = get_live_distance()
-        print(f"\n[!] ไม่สำเร็จ: เดินเข้าหากล่องไม่สำเร็จ (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
+        final_scr = get_screen()
+        final_pos, final_dist = get_live_distance(final_scr)
+        print(f"\n[!] ไม่สำเร็จ: เดินไม่ถึงกล่อง (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
 
 if __name__ == "__main__":
     main()
