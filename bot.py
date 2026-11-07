@@ -23,6 +23,9 @@ def get_screen():
     return None
 
 def extract_coords(screen):
+    """
+    โฟกัสตัดเฉพาะกรอบพิกัด ไม่ว่าจอจะแคปมาเป็นแนวนอนหรือแนวตั้ง
+    """
     if screen is None:
         return None
 
@@ -64,46 +67,20 @@ def extract_coords(screen):
 
     return None
 
-# พิกัดกึ่งกลางปุ่มจอยสติ๊กสำหรับจอ 1280x720
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
 JOY_RADIUS   = 145
 
-def walk_in_direction(angle_deg, duration_ms=300):
+def walk_by_angle(angle_deg, duration_ms=400):
+    """ส่งคำสั่งดันจอยสติ๊กตามมุมองศาบนหน้าจอ (0=ดันขึ้น, 90=ดันขวา, 180=ดันลง, 270=ดันซ้าย)"""
     angle_rad = math.radians(angle_deg)
     target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
     target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
     swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
     time.sleep(0.15)
 
-def move_fixed_grid(diff_x, diff_y, duration_sec):
-    """
-    ทิศทางจริงตามที่พิสูจน์จากหน้าจอ:
-    - diff_x > 0 (ต้องการเพิ่ม X) -> ดัน ขวา (90°)
-    - diff_x < 0 (ต้องการลด X)   -> ดัน ซ้าย (270°)
-    - diff_y > 0 (ต้องการเพิ่ม Y) -> ดัน หน้า (0°)
-    - diff_y < 0 (ต้องการลด Y)   -> ดัน หลัง (180°)
-    """
-    if abs(diff_x) > 0:
-        if diff_x > 0:
-            angle = 90
-            name = f"ขวาเพื่อเพิ่ม X ({diff_x:+d})"
-        else:
-            angle = 270
-            name = f"ซ้ายเพื่อลด X ({diff_x:+d})"
-    else:
-        if diff_y > 0:
-            angle = 0
-            name = f"ตรงไปข้างหน้าเพื่อเพิ่ม Y ({diff_y:+d})"
-        else:
-            angle = 180
-            name = f"ถอยหลังเพื่อลด Y ({diff_y:+d})"
-
-    print(f"[->] ล็อกแกนเดิน: {name} เป็นเวลา {duration_sec:.2f} วิ")
-    walk_in_direction(angle, duration_ms=int(duration_sec * 1000))
-
 def wait_and_settle_coords(max_wait=3.5):
-    """วนอ่านพิกัดตลอดเวลาช่วงหยุดนิ่ง เช็กจนกว่าค่านิ่งตรงกัน 2 รอบ"""
+    """วนอ่านพิกัดจนกว่าจะนิ่งตรงกัน 2 รอบติด ป้องกันภาพเบลอระหว่างขยับ"""
     start_t = time.time()
     last_val = None
 
@@ -120,13 +97,13 @@ def wait_and_settle_coords(max_wait=3.5):
 
     return last_val
 
-TARGET_CHEST = (17527, 15331)
+TARGET_CHEST = (17527, 15336)
 TIMEOUT_LIMIT = 10
 DIRECTIONS = [0, 45, 90, 135, 180, 225, 270, 315]
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: แก้ไขทิศทางถูกต้องตรงเป้าหมาย")
+    print(f"[*] UtopiaFarmAI: โฟกัสพิกัด -> คำนวณมุมกล้องจริง -> เดินเข้าหากล่อง")
     print(f"[*] พิกัดเป้าหมายกล่อง: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
@@ -134,64 +111,97 @@ def main():
     not_found_start = None
     dir_index = 0
 
-    while True:
-        pos = wait_and_settle_coords(max_wait=3.5)
+    # ตัวแปรจำมุมองศาของกล้องปัจจุบัน (Heading Offset)
+    camera_angle_offset = None
 
-        # 1. หากหาพิกัดไม่เจอ
-        if pos is None:
+    while True:
+        # ขั้นที่ 1: โฟกัสอ่านตำแหน่งพิกัดปัจจุบันให้นิ่งสนิท
+        pos1 = wait_and_settle_coords(max_wait=3.5)
+
+        if pos1 is None:
             if not_found_start is None:
                 not_found_start = time.time()
 
             elapsed = int(time.time() - not_found_start)
             current_dir = DIRECTIONS[dir_index % len(DIRECTIONS)]
             dir_index += 1
-            print(f"[?] สำรวจหาพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ขยับมุม {current_dir}°")
+            print(f"[?] กำลังจับโฟกัสพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) -> ก้าวสั้นมุม {current_dir}°")
 
             if elapsed >= TIMEOUT_LIMIT:
-                print(f"\n[!] ไม่พบพิกัดต่อเนื่องครบ {TIMEOUT_LIMIT} วิ -> หยุดการทำงาน")
+                print(f"\n[!] ไม่พบพิกัดต่อเนื่องครบ {TIMEOUT_LIMIT} วิ -> หยุดอัตโนมัติ")
                 break
 
-            walk_in_direction(current_dir, duration_ms=250)
+            walk_by_angle(current_dir, duration_ms=250)
             continue
 
-        # 2. อ่านพิกัดสำเร็จ
         not_found_start = None
-        cur_x, cur_y = pos
-        
-        diff_x = TARGET_CHEST[0] - cur_x
-        diff_y = TARGET_CHEST[1] - cur_y
-        dist = math.sqrt(diff_x**2 + diff_y**2)
+        cur_x, cur_y = pos1
+
+        dx = TARGET_CHEST[0] - cur_x
+        dy = TARGET_CHEST[1] - cur_y
+        dist = math.sqrt(dx**2 + dy**2)
 
         print("-" * 55)
-        print(f"[✓] พิกัดนิ่ง: ({cur_x}, {cur_y}) | เป้าหมาย: {TARGET_CHEST}")
-        print(f"[✓] ส่วนต่าง: diff_X = {diff_x:+d}, diff_Y = {diff_y:+d} (ห่าง {dist:.2f} หน่วย)")
+        print(f"[✓] โฟกัสพิกัดนิ่ง: ({cur_x}, {cur_y}) | เป้าหมาย: {TARGET_CHEST}")
+        print(f"[✓] ระยะห่างถึงกล่อง: {dist:.2f} หน่วย (dx={dx:+d}, dy={dy:+d})")
 
-        # 3. ถึงจุดหมายประชิดที่สุด (ห่างไม่เกิน 1.0 หน่วย หรือชนพิกัด)
-        if dist <= 1.0 or (diff_x == 0 and diff_y == 0):
+        # ตรวจสอบว่าถึงหน้ากล่องแล้วหรือยัง (ชิดที่สุดในระยะ 1.5 หน่วย)
+        if dist <= 1.5 or (abs(dx) <= 1 and abs(dy) <= 1):
             print("\n" + "=" * 50)
-            print(f"[✓] ถึงจุดหมายใกล้ที่สุดแล้ว! ({cur_x}, {cur_y})")
-            print("[✓] แตะปุ่มรูปมือเปิดกล่องทันที...")
+            print(f"[✓] ถึงตำแหน่งหน้ากล่องแล้ว! ({cur_x}, {cur_y})")
+            print("[✓] แตะปุ่มรูปมือเปิดกล่อง...")
             print("=" * 50)
             time.sleep(0.4)
             tap(820, 430)
             break
 
-        # 4. คำนวณความเร็วและระยะก้าว
-        target_diff = abs(diff_x) if abs(diff_x) > 0 else abs(diff_y)
-        
-        if target_diff > 80:
-            step_duration = 3.5  # ระยะไกลมาก
-        elif target_diff > 20:
-            step_duration = 1.5  # ระยะปานกลาง
-        elif target_diff > 5:
-            step_duration = 0.6  # เริ่มใกล้
-        elif target_diff > 2:
-            step_duration = 0.35 # ใกล้มาก
+        # ขั้นที่ 2: ถ้ายังไม่เคยวัดมุมกล้อง หรือเพิ่งหลงทิศ ให้ทดสอบก้าวสั้นเพื่อเทียบมุมกล้อง
+        if camera_angle_offset is None:
+            print("[*] กำลังทดสอบทิศทางหน้าจอเพื่อวัดมุมกล้องจริง...")
+            walk_by_angle(0, duration_ms=450)  # ดันจอยไปข้างหน้า 1 ครั้ง
+            pos2 = wait_and_settle_coords(max_wait=3.0)
+            
+            if pos2 is not None and pos2 != pos1:
+                step_dx = pos2[0] - pos1[0]
+                step_dy = pos2[1] - pos1[1]
+                # คำนวณว่าการดันจอยไปข้างหน้า (0°) ส่งผลให้พิกัดในเกมเปลี่ยนไปในมุมไหน
+                camera_angle_offset = math.atan2(step_dx, step_dy)
+                print(f"[✓] สอบเทียบมุมกล้องสำเร็จ! (ก้าวทดสอบ: dx={step_dx:+d}, dy={step_dy:+d})")
+                cur_x, cur_y = pos2
+                dx = TARGET_CHEST[0] - cur_x
+                dy = TARGET_CHEST[1] - cur_y
+                dist = math.sqrt(dx**2 + dy**2)
+            else:
+                print("[!] ก้าวทดสอบไม่เห็นผล ขยับมุมรอบตัวเพื่อหาพื้นที่ว่าง...")
+                walk_by_angle(90, duration_ms=350)
+                continue
+
+        # ขั้นที่ 3: คำนวณทิศทางมุ่งตรงเข้าหากล่องโดยหักล้างมุมกล้องหน้าจอ
+        target_world_angle = math.atan2(dx, dy)
+        # มุมที่ต้องกดบนจอยสติ๊ก = มุมเป้าหมาย - มุมกล้องปัจจุบัน
+        joystick_angle_rad = target_world_angle - camera_angle_offset
+        joystick_angle_deg = (math.degrees(joystick_angle_rad) + 360) % 360
+
+        # ขั้นที่ 4: คำนวณระยะก้าวเดิน
+        if dist > 80:
+            step_duration = 3.5  # ระยะไกลมาก เดินยาว
+        elif dist > 20:
+            step_duration = 1.6  # ระยะปานกลาง
+        elif dist > 6:
+            step_duration = 0.8  # เริ่มใกล้
+        elif dist > 2.5:
+            step_duration = 0.45 # ใกล้มาก
         else:
-            step_duration = 0.18 # ระยะ 1-2 แต้มสุดท้าย ค่อยๆ สะกิดเข้าหา
+            step_duration = 0.22 # ระยะ 1-2 ก้าวสุดท้าย สะกิดเบาๆ ชิดกล่อง
 
-        # 5. เดินตามแกนที่แก้ไขทิศทางแล้ว
-        move_fixed_grid(diff_x, diff_y, step_duration)
+        print(f"[->] คำนวณเสร็จสิ้น: ดันจอยมุม {joystick_angle_deg:.0f}° เป็นเวลา {step_duration:.2f} วิ...")
+        
+        # เก็บพิกัดก่อนเดินไว้เช็กผล
+        before_pos = (cur_x, cur_y)
+        walk_by_angle(joystick_angle_deg, duration_ms=int(step_duration * 1000))
 
-if __name__ == "__main__":
-    main()
+        # รอให้ตัวละครหยุดนิ่งแล้วอ่านพิกัดใหม่
+        after_pos = wait_and_settle_coords(max_wait=3.5)
+        
+        # ถ้าเดินแล้วระยะห่างกลับเพิ่มขึ้น แสดงว่ามุมกล้องหมุนเปลี่ยนไปแล้ว ให้สั่งรีเซ็ตเพื่อวัดมุมใหม่
+        if after_pos is not None:
