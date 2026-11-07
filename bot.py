@@ -47,87 +47,90 @@ def read_coordinates(screen):
     nums = re.findall(r"\d{4,6}", text)
     if len(nums) >= 2:
         try:
-            return (int(nums[0]), int(nums[1]))
+            x, y = int(nums[0]), int(nums[1])
+            # กรองค่าขยะ: พิกัดบริเวณเกาะนี้ X ต้องอยู่ช่วง 17000-18000 และ Y อยู่ช่วง 15000-16000
+            if 17000 <= x <= 18000 and 15000 <= y <= 16000:
+                return (x, y)
         except ValueError:
             return None
     return None
 
-# พิกัดคันโยกเดินตรง
+# พิกัดคันโยกเดิน
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
-JOY_UP_Y     = 380
+JOY_RADIUS   = 140
 
-def walk_forward_step(duration_ms=800):
-    swipe(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_UP_Y, duration=duration_ms)
+def walk_by_direction(dx, dy, duration_sec=1.5):
+    """เดินตามทิศทางเวกเตอร์ (dx, dy) ที่คำนวณได้"""
+    angle_rad = math.atan2(dx, dy)
+    target_x = int(JOY_CENTER_X + JOY_RADIUS * math.sin(angle_rad))
+    target_y = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(angle_rad))
+    duration_ms = int(duration_sec * 1000)
+    
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, target_x, target_y, duration=duration_ms)
     time.sleep(0.3)
 
-def turn_camera_right(pixels=140):
-    print("[↻] หมุนมุมกล้องไปทางขวาเล็กน้อย...")
-    swipe(950, 400, 950 - pixels, 400, duration=200)
+def walk_forward_step(duration_ms=600):
+    swipe(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
     time.sleep(0.3)
 
 TARGET_CHEST = (17529, 15339)
-TIMEOUT_LIMIT = 60  # จำกัดเวลาไม่เจอพิกัด 60 วินาที (1 นาที)
+TIMEOUT_LIMIT = 60
 
 def main():
     print("=" * 60)
-    print(f"[*] UtopiaFarmAI: นำทางไปยัง {TARGET_CHEST}")
-    print(f"[*] ระบบความปลอดภัย: หากหาพิกัดไม่เจอใน {TIMEOUT_LIMIT} วิ จะหยุดทำงานทันที")
+    print(f"[*] UtopiaFarmAI: ระบบอ่านพิกัด -> หยุด 5 วิ -> คำนวณทิศทางหากล่อง {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(3)
 
-    last_dist = None
-    not_found_start_time = None  # ตัวแปรจับเวลาเริ่มต้นที่ไม่เจอพิกัด
+    not_found_start = None
 
     while True:
         scr = get_screen()
         pos = read_coordinates(scr)
 
-        # กรณีอ่านพิกัดไม่เจอ
+        # กรณีหาพิกัดไม่เจอ
         if pos is None:
-            # เริ่มจับเวลาตั้งแต่ครั้งแรกที่อ่านไม่เจอ
-            if not_found_start_time is None:
-                not_found_start_time = time.time()
+            if not_found_start is None:
+                not_found_start = time.time()
 
-            elapsed = int(time.time() - not_found_start_time)
-            print(f"[?] ไม่พบพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วินาที) ขยับตัวเพื่อหาแสงใหม่")
+            elapsed = int(time.time() - not_found_start)
+            print(f"[?] ไม่พบพิกัด... ({elapsed}/{TIMEOUT_LIMIT} วิ) ขยับก้าวสั้นๆ เพื่อเปลี่ยนแสง")
 
-            # เช็กเงื่อนไข: ครบ 60 วินาทีแล้วหรือยัง
             if elapsed >= TIMEOUT_LIMIT:
-                print("\n" + "!" * 55)
-                print(f"[!] แจ้งเตือน: หาพิกัดไม่เจอติดต่อกันเกิน {TIMEOUT_LIMIT} วินาที")
-                print("[!] ทำการหยุดการทำงานของบอททันทีเพื่อความปลอดภัย")
-                print("!" * 55)
+                print(f"[!] ไม่พบพิกัดครบ {TIMEOUT_LIMIT} วินาที -> หยุดการทำงานเพื่อความปลอดภัย")
                 break
 
             walk_forward_step(500)
             continue
 
-        # หากอ่านพิกัดเจอ ให้รีเซ็ตตัวจับเวลา Timeout กลับเป็น None
-        not_found_start_time = None
-
+        # รีเซ็ตตัวจับเวลาเมื่ออ่านพิกัดเจอ
+        not_found_start = None
         cur_x, cur_y = pos
-        dist = math.sqrt((TARGET_CHEST[0] - cur_x)**2 + (TARGET_CHEST[1] - cur_y)**2)
-        print(f"[*] อ่านพิกัดสำเร็จ: ({cur_x}, {cur_y}) | เหลือระยะห่าง: {dist:.1f} หน่วย")
+        
+        dx = TARGET_CHEST[0] - cur_x
+        dy = TARGET_CHEST[1] - cur_y
+        dist = math.sqrt(dx**2 + dy**2)
 
+        print("\n" + "=" * 50)
+        print(f"[✓] ยืนยันพิกัดปัจจุบัน: ({cur_x}, {cur_y})")
+        print(f"[✓] ระยะห่างถึงกล่อง: {dist:.1f} หน่วย")
+        print("[⏸] สั่งหยุดนิ่ง 5 วินาทีเพื่อคำนวณเส้นทาง...")
+        print("=" * 50)
+        
+        # สั่งหยุดนิ่ง 5 วินาที
+        time.sleep(5)
+
+        # ถ้าระยะห่างเหลือไม่เกิน 3 หน่วย ถือว่าถึงหน้ากล่องแล้ว
         if dist <= 3.0:
-            print("[✓] ถึงตำแหน่งกล่องเรียบร้อยแล้ว!")
+            print("[✓] ถึงตำแหน่งหน้ากล่องเรียบร้อยแล้ว!")
             time.sleep(0.5)
-            tap(820, 430)
+            tap(820, 430)  # ปุ่มเปิดกล่อง
             break
 
-        if last_dist is not None:
-            if dist < last_dist:
-                print("[✓ ถูกทาง] กำลังเข้าใกล้เป้าหมาย -> เดินหน้าต่อ")
-                walk_forward_step(1000)
-            else:
-                print("[! ผิดทาง] ระยะห่างเพิ่มขึ้น -> หมุนกล้องแก้ทิศ")
-                turn_camera_right(160)
-                walk_forward_step(600)
-        else:
-            walk_forward_step(800)
-
-        last_dist = dist
+        # คำนวณทิศทางแล้วเดินตามเวกเตอร์ไปยังกล่อง
+        print(f"[->] คำนวณเสร็จสิ้น: dx={dx}, dy={dy} -> เริ่มก้าวเดินเข้าหากล่อง...")
+        walk_by_direction(dx, dy, duration_sec=1.8)
 
 if __name__ == "__main__":
     main()
