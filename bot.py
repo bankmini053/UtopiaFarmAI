@@ -17,7 +17,7 @@ def run_cmd(cmd):
 def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
-def swipe_screen(x1, y1, x2, y2, duration=260):
+def swipe_screen(x1, y1, x2, y2, duration=250):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
 
 def get_screen():
@@ -51,45 +51,40 @@ def extract_coords(screen):
                 pass
     return None
 
-def get_current_distance():
-    """อ่านพิกัดปัจจุบันและคำนวณระยะห่างถึงกล่อง"""
+def get_live_distance():
     scr = get_screen()
     pos = extract_coords(scr)
     if pos is not None:
-        cur_x, cur_y = pos
-        dx = TARGET_CHEST[0] - cur_x
-        dy = TARGET_CHEST[1] - cur_y
+        dx = TARGET_CHEST[0] - pos[0]
+        dy = TARGET_CHEST[1] - pos[1]
         dist = math.sqrt(dx**2 + dy**2)
         return pos, dist
     return None, 999.0
 
 def rotate_camera_towards(diff):
     """
-    แก้ทิศทางการรูดให้ถูกต้อง:
-    - ถ้า diff < 0 (กล่องอยู่ซ้าย X < 640) -> ต้องดึงกล่องมาทางขวา ลากจากขวาไปซ้าย
-    - ถ้า diff > 0 (กล่องอยู่ขวา X > 640) -> ต้องดึงกล่องมาทางซ้าย ลากจากซ้ายไปขวา
+    ดึงกล่องเข้ากึ่งกลางจอ:
+    diff < 0 (กล่องอยู่ซ้าย) -> รูดขวาไปซ้ายเพื่อหมุนรับ
+    diff > 0 (กล่องอยู่ขวา) -> รูดซ้ายไปขวา
     """
     cx, cy = 850, 260
-    dist = int(abs(diff) * 0.50)
-    dist = min(max(dist, 60), 220)
+    dist = int(abs(diff) * 0.45)
+    dist = min(max(dist, 50), 180)
 
     if diff < 0:
-        # กล่องอยู่ซ้าย -> รูดไปซ้ายเพื่อหมุนกล้องรับ
-        swipe_screen(cx, cy, cx - dist, cy, duration=240)
+        swipe_screen(cx, cy, cx - dist, cy, duration=220)
     else:
-        # กล่องอยู่ขวา -> รูดไปขวา
-        swipe_screen(cx - dist, cy, cx, cy, duration=240)
+        swipe_screen(cx - dist, cy, cx, cy, duration=220)
     time.sleep(0.4)
 
-def scan_rotate_right(dist=220):
+def scan_rotate_right(dist=180):
     cx, cy = 850, 260
-    swipe_screen(cx, cy, cx - dist, cy, duration=280)
-    time.sleep(0.4)
+    swipe_screen(cx, cy, cx - dist, cy, duration=250)
+    time.sleep(0.45)
 
 JOY_CENTER_X, JOY_CENTER_Y, JOY_RADIUS = 250, 530, 145
 
 def walk_straight(duration_ms=450):
-    """เดินตรงไปข้างหน้า (0 องศา)"""
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
     time.sleep(0.15)
 
@@ -107,7 +102,7 @@ def detect_chest(screen):
     best_x, max_a = 0, 0
     for cnt in contours:
         a = cv2.contourArea(cnt)
-        if a > 650:
+        if a > 700:
             x, y, cw, ch = cv2.boundingRect(cnt)
             if 0.5 <= float(cw) / ch <= 2.2 and a > max_a:
                 max_a = a
@@ -123,76 +118,79 @@ def check_hand_button(screen):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: กวาดหา -> จัดกึ่งกลางเป๊ะ -> เดินจนเข้าใกล้กล่อง/พบรูปมือ")
+    print("[*] UtopiaFarmAI: กวาดหา -> เบรกนิ่ง -> จัดกึ่งกลาง -> เดินเช็กระยะห่าง")
     print(f"[*] พิกัดเป้าหมาย: {TARGET_CHEST}")
     print("=" * 60)
     time.sleep(2)
 
     CENTER_X = 640
-    TOLERANCE = 45  # บีบให้แคบลง (595 - 685) เพื่อให้กล่องอยู่ตรงกลางเป๊ะจริงๆ ก่อนเริ่มเดิน
+    TOLERANCE = 40
 
-    # 1. กวาดสายตา 360 องศา (8 สเต็ป)
+    # 1. กวาดสายตา 360 องศา (เจอกล่องปุ๊บ เบรกหยุดทันที)
     found_chest = False
     for step in range(8):
         scr = get_screen()
         found, chest_x, area = detect_chest(scr)
         if found:
-            print(f"\n[👁] ตรวจพบกล่องแล้วที่มุมมองสเต็ป {step + 1}/8! (X={chest_x}, ขนาด: {area:.1f})")
+            print(f"\n[👁] ตรวจพบกล่องทันทีที่มุมสเต็ป {step + 1}/8! (X={chest_x}, ขนาด: {area:.1f})")
+            print("[🛑] สั่งเบรกหยุดหมุนหน้าจอทันที!")
             found_chest = True
             break
         else:
             print(f"[🔄] กวาดสายตามุมที่ {step + 1}/8 -> หมุนต่อ...")
-            scan_rotate_right(dist=220)
+            scan_rotate_right(dist=180)
 
     if not found_chest:
         print("\n[!] ไม่สำเร็จ: กวาดสายตาครบ 360 องศาแล้วไม่พบกล่อง")
         return
 
-    # 2. หยุดรอภาพนิ่ง 2 วินาที
+    # 2. รอภาพนิ่งสนิท 2.0 วินาที
     print("[⏸] หยุดรอภาพนิ่งสนิท 2 วินาที...")
     time.sleep(2.0)
 
-    # 3. หันหน้าจอจัดให้กล่องอยู่ตรงกลางจอเป๊ะๆ
+    # 3. จัดให้กล่องอยู่กึ่งกลางจอเป๊ะๆ (X = 600 - 680)
     aligned = False
-    for attempt in range(10):
+    for attempt in range(8):
         still_scr = get_screen()
         still_found, still_x, _ = detect_chest(still_scr)
 
         if not still_found:
-            print("[?] กำลังค้นหาตำแหน่งกล่องซ้ำ...")
-            scan_rotate_right(dist=90)
+            print("[?] กำลังค้นหาตำแหน่งกล่องใหม่...")
+            scan_rotate_right(dist=80)
             continue
 
         diff = still_x - CENTER_X
         if abs(diff) <= TOLERANCE:
-            print(f"\n[🎯] ล็อกกล่องอยู่ตรงกลางจอเป๊ะแล้ว! (X={still_x}, คลาดเคลื่อน: {diff:+d}px)")
+            print(f"\n[🎯] ล็อกกล่องกึ่งกลางจอเป๊ะแล้ว! (X={still_x}, คลาดเคลื่อน: {diff:+d}px)")
             aligned = True
             break
 
-        print(f"[*] กำลังจัดกึ่งกลาง: กล่องอยู่ที่ X={still_x} (ห่างกลางจอ: {diff:+d})")
+        print(f"[*] กำลังจัดกลาง: กล่องอยู่ที่ X={still_x} (ห่างกลางจอ: {diff:+d})")
         rotate_camera_towards(diff)
 
     if not aligned:
         print("\n[!] ไม่สำเร็จ: ไม่สามารถล็อกกล่องให้อยู่ตรงกลางจอได้")
         return
 
-    # 4. เดินตรงเข้าหากล่องแบบตรวจสอบสด (ไม่จำกัดรอบก้าวตายตัว)
+    # 4. เดินตรงเข้าชนกล่องแบบเช็กระยะห่างจริง (ตรวจจับว่าเดินเข้าหาหรือเดินถอยหลัง)
     print("\n" + "=" * 50)
-    print("[↑] เริ่มเดินตรงเข้าชนกล่อง (ตรวจพิกัดและปุ่มรูปมือแบบ Real-time)...")
+    print("[↑] เริ่มเดินตรงเข้าชนกล่อง (ระบบตรวจสอบระยะห่าง Real-time)...")
     print("=" * 50)
 
-    opened = False
-    walk_attempts = 0
+    start_pos, last_dist = get_live_distance()
+    print(f"[*] จุดเริ่มต้นเดิน: {start_pos} | ห่างจากกล่อง: {last_dist:.2f} หน่วย")
 
-    while walk_attempts < 15:
-        walk_attempts += 1
+    opened = False
+    wrong_direction_count = 0
+
+    for step in range(12):
         walk_straight(duration_ms=450)
-        time.sleep(0.15)
+        time.sleep(0.2)
 
         curr_scr = get_screen()
-        pos, dist = get_current_distance()
+        pos, dist = get_live_distance()
 
-        # ตรวจสอบว่าปุ่มรูปมือขึ้นมาหรือยัง
+        # เช็กปุ่มรูปมือก่อนเสมอ
         if check_hand_button(curr_scr):
             print(f"\n[🎯] ตรวจพบปุ่มรูปมือแล้ว! (พิกัดคน: {pos}, ห่างกล่อง: {dist:.2f} หน่วย)")
             print("[✓] แตะเปิดกล่องทันที...")
@@ -202,25 +200,34 @@ def main():
             opened = True
             break
 
-        # ตรวจสอบว่าเดินเข้าใกล้ระยะประชิดกล่องแล้วหรือไม่ (ห่าง <= 2.2 หน่วย)
+        # เช็กว่าถึงระยะประชิดกล่องแล้วหรือไม่ (<= 2.2 หน่วย)
         if dist <= 2.2:
-            print(f"\n[🎯] เดินถึงระยะประชิดกล่องแล้ว! (พิกัดคน: {pos}, ห่าง: {dist:.2f} หน่วย)")
+            print(f"\n[🎯] ถึงระยะประชิดกล่องแล้ว! (พิกัดคน: {pos}, ห่าง: {dist:.2f} หน่วย)")
             time.sleep(0.3)
-            # เผื่อปุ่มมือเพิ่งโผล่หลังจากตัวละครหยุดเดิน
-            chk = get_screen()
             tap(1045, 390)
             time.sleep(0.3)
             tap(1045, 390)
             opened = True
             break
 
-        print(f"[*] กำลังเดินเข้าหากล่อง (ก้าวที่ {walk_attempts}) | พิกัด: {pos} | ระยะห่าง: {dist:.2f}")
+        # ตรวจสอบทิศทาง: ถ้าระยะห่างเพิ่มขึ้น แปลว่าเดินผิดทิศ
+        if pos is not None and dist > (last_dist + 1.5):
+            wrong_direction_count += 1
+            print(f"[⚠️] เดินผิดทาง! ระยะห่างเพิ่มขึ้น ({last_dist:.2f} -> {dist:.2f})")
+            if wrong_direction_count >= 2:
+                print("\n[!] ยกเลิกการเดิน: ตรวจพบว่าเดินหนีห่างจากกล่องเป้าหมายจริง")
+                break
+        else:
+            wrong_direction_count = 0
+
+        last_dist = dist
+        print(f"[*] เดินเข้าหากล่อง (ก้าวที่ {step + 1}) | พิกัด: {pos} | ระยะห่าง: {dist:.2f}")
 
     if opened:
         print("\n[✓] ภารกิจเปิดกล่องเสร็จสมบูรณ์!")
     else:
-        final_pos, final_dist = get_current_distance()
-        print(f"\n[!] ไม่สำเร็จ: เดินเข้าหากล่องไม่สำเร็จ (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
+        final_pos, final_dist = get_live_distance()
+        print(f"\n[!] ไม่สำเร็จ: ไม่สามารถเข้าถึงกล่องได้ (พิกัด: {final_pos}, ห่าง: {final_dist:.2f})")
 
 if __name__ == "__main__":
     main()
