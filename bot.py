@@ -368,64 +368,55 @@ def detect_target_tree(screen):
 
 def check_target_name_match(screen):
     """
-    ข้อ 4 (ฉบับสมบูรณ์): 
-    1. เทียบไฟล์ Name_Rubber_tree.png
-    2. ตรวจสอบแถบสีเลือดสีแดง (HSV)
-    3. ตรวจสอบ OCR ตัวหนังสือภาษาไทย/อังกฤษ (กรองตัดเฉพาะฟอนต์สีขาว)
+    ข้อ 4:
+    - มีเลือดสีแดง = ต้นไม้ยังมีชีวิต พร้อมฟันต่อ
+    - ไม่มีเลือดสีแดง = ต้นไม้ล้มแล้ว / ตายแล้ว หรือพร้อมเก็บ
+    - ปริ้นต์ข้อความและค่าที่อ่านได้ทั้งหมดออกจอ
     """
     if screen is None:
-        return False, "ไม่พบภาพ"
+        return False, False, "ไม่พบภาพหน้าจอ"
 
-    # โซนป้ายชื่อเป้าหมายแถบขวาบน
+    # โซนป้ายชื่อและหลอดเลือดมุมขวาบน
     roi = screen[120:340, 780:1260]
 
-    matched_by_icon = False
-    icon_detail = ""
+    # 1. ตรวจจับเฉดสีแดงของหลอดเลือด (HSV)
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
+    mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
+    red_count = int(np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0))
+    has_blood = red_count > 45
 
-    # 1. เทียบภาพเทมเพลต Name_Rubber_tree.png
+    # 2. ตรวจสอบไฟล์ป้ายชื่อ Name_Rubber_tree.png
+    name_matched = False
     name_icon = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
+    icon_val = 0.0
     if os.path.exists(name_icon):
         tpl = cv2.imread(name_icon)
         if tpl is not None and roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
             res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
-            _, val, _, _ = cv2.minMaxLoc(res)
-            if val >= 0.42:
-                matched_by_icon = True
-                icon_detail = f"ตรงไอคอน Name_Rubber_tree ({val:.2f})"
+            _, icon_val, _, _ = cv2.minMaxLoc(res)
+            if icon_val >= 0.40:
+                name_matched = True
 
-    # แปลงภาพเป็น HSV สำหรับวิเคราะห์สีเลือดและตัวหนังสือ
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-    # 2. ตรวจสอบเฉดสีแดงของแถบหลอดเลือด (Hue: 0-10 และ 160-180)
-    mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
-    mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
-    has_blood_bar = (np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0)) > 50
-
-    # 3. ระบบ OCR: กรองเฉพาะเนื้อตัวหนังสือสีขาวสว่าง (ตัดฉากหลังและกรอบเงาออก)
-    lower_white = np.array([0, 0, 190])
-    upper_white = np.array([180, 45, 255])
+    # 3. OCR อ่านค่าตัวหนังสือจริงทั้งหมดที่จับได้
+    lower_white = np.array([0, 0, 185])
+    upper_white = np.array([180, 50, 255])
     mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
+    raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip()
+    clean_ocr = "".join(ch for ch in raw_ocr if ch.isalnum() or ch in " _-")
 
-    # ส่งให้อ่าน OCR เฉพาะมาสก์ตัวอักษรสีขาว
-    text = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip()
+    status_detail = f"ข้อความ OCR: '{raw_ocr}' (คลีน: '{clean_ocr}') | เลือดแดง: {red_count}px | ไอคอน: {icon_val:.2f}"
 
-    # ดักจับว่าถ้าเป็นหินหรือแร่ ให้หยุดทันที
-    if any(k in text.lower() for k in ["stone", "mine", "หิน", "iron", "ore", "copper"]):
-        return False, f"พบก้อนหินหรือแร่ ({text}) ไม่ใช่ต้นไม้"
+    # เงื่อนไข: ถ้าไม่มีเลือดแดงเลย แสดงว่าต้นไม้ล้มแล้ว/ไม่มีเป้าหมาย
+    if not has_blood:
+        return False, True, f"ไม่มีหลอดเลือดแดง (ต้นไม้ล้ม/ตายแล้ว) -> {status_detail}"
 
-    # คำค้นหาที่ตรงกับต้นยางพารา
-    rubber_keywords = ["rubber", "tree", "ยาง", "พารา", "ต้นไม้"]
-    matched_by_ocr = any(k in text.lower() for k in rubber_keywords)
+    # มีเลือดแดง + ตรวจเจอชื่อหรือไอคอน
+    if name_matched or any(k in raw_ocr.lower() for k in ["rubber", "tree", "ยาง", "พารา"]):
+        return True, False, f"พบต้นไม้และมีเลือดสมบูรณ์ -> {status_detail}"
 
-    # เงื่อนไขการตัดสิน: ผ่านเมื่อตรงไอคอน + มีเลือด หรือ OCR เจอชื่อยางพารา
-    if matched_by_icon and has_blood_bar:
-        return True, f"ยืนยันสมบูรณ์: {icon_detail} + พบหลอดเลือด (OCR: '{text}')"
-    elif matched_by_ocr:
-        return True, f"ยืนยันจาก OCR ตัวหนังสือ: '{text}' (พบเลือด={has_blood_bar})"
-    elif matched_by_icon:
-        return True, f"ยืนยันจากไอคอน: {icon_detail}"
-
-    return False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่มีหลอดเลือด (OCR: '{text}')"
+    # มีเลือดแดงแต่ชื่อเพี้ยน ให้ผ่านเพราะมีเลือดเป็นตัวการันตีว่าตีโดนต้นไม้
+    return True, False, f"พบหลอดเลือดแดงพร้อมฟัน (ชื่อไม่ชัด) -> {status_detail}"
 
 
 def walk_direction(deg=0, duration_ms=480):
