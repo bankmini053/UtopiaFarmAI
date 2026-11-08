@@ -592,12 +592,30 @@ def main():
                     reached_close = True
                     break
 
-                walk_direction(walk_deg, duration_ms=480)
+                                walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
             else:
-                print(f"[*] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว -> ดันเดินตรงต่อ")
-                walk_direction(0, duration_ms=360)
-                time.sleep(0.08)
+                print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
+                target_reacquired = False
+                
+                # นับถอยหลัง 5 วินาทีเพื่อมองหาเป้าหมายซ้ำ
+                for wait_sec in range(5, 0, -1):
+                    print(f"[*] กำลังค้นหาเป้าหมายใหม่... นับถอยหลังเหลือ {wait_sec} วินาที")
+                    time.sleep(1.0)
+                    retry_scr = get_screen()
+                    found_retry, _, _, _, _ = detect_target_tree(retry_scr)
+                    if found_retry or check_pickup_hand(retry_scr)[0]:
+                        print("[✓] พบเป้าหมายกลับเข้ามาในมุมมองแล้ว! เดินหน้าต่อ...")
+                        target_reacquired = True
+                        break
+
+                # หากครบ 5 วินาทีแล้วยังไม่เจอ ให้หยุดทำงานทันที
+                if not target_reacquired:
+                    print("\n" + "=" * 60)
+                    print("[!] ล้มเหลว: เป้าหมายหลุดมุมมองเกิน 5 วินาที -> สั่งหยุดทำงานทันที")
+                    print("=" * 60)
+                    return
+
 
         # ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อตรวจชื่อ
         print(f"\n[4] ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อเช็กชื่อต้นไม้ ({tree_type_name})...")
