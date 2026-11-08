@@ -14,6 +14,7 @@ TARGET_CHEST = (17527, 15336)
 
 CAL_MS = 900        # ระยะเวลาก้าวสอบเทียบ
 STOP_DIST = 2.2     # ระยะที่ถือว่าถึงกล่อง (ปรับตามจริง)
+USE_SCAN = False    # ปิดการกวาดหากล่องด้วยสี (จับผิดบ่อย) ใช้พิกัดอย่างเดียว
 
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
@@ -136,15 +137,17 @@ def check_hand_button(screen):
 # ---------------------------------------------------------------- เดินตามพิกัด
 def measure_step(deg):
     """เดิน 1 ก้าวสอบเทียบ แล้วคืนค่าพิกัดที่เปลี่ยน (dx, dy)"""
-    for _ in range(3):
+    for ms in (CAL_MS, 1500, 2200):
         p1 = read_pos()
-        walk_direction(deg, CAL_MS)
-        time.sleep(0.4)
+        walk_direction(deg, ms)
+        time.sleep(0.5)
         p2 = read_pos()
+        print(f"[cal] deg={deg} ms={ms} p1={p1} p2={p2}")
         if p1 and p2:
             v = (p2[0] - p1[0], p2[1] - p1[1])
             if math.hypot(*v) > 1:
-                return v
+                k = CAL_MS / ms
+                return (v[0] * k, v[1] * k)
     return None
 
 
@@ -223,8 +226,8 @@ def main():
     time.sleep(2)
 
     # 1. กวาดสายตา 360 องศาตรวจหากล่อง
-    found_chest = False
-    for step in range(8):
+    found_chest = not USE_SCAN
+    for step in range(8 if USE_SCAN else 0):
         scr = get_screen()
         found, chest_x, area = detect_chest(scr)
         if found:
@@ -239,7 +242,7 @@ def main():
         return
 
     # 2. หยุดนิ่ง 10 วินาที
-    for sec in range(10, 0, -1):
+    for sec in range(10 if USE_SCAN else 0, 0, -1):
         print(f"[*] หยุดรอภาพนิ่ง... เหลืออีก {sec} วินาที")
         time.sleep(1.0)
 
