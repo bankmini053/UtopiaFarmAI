@@ -112,12 +112,10 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
 
 
 def check_pickup_hand(screen):
-    """ตรวจจับปุ่มรูปมือ (pickup_hand.png) จาก icons/"""
     icon_path = os.path.join(ICONS_DIR, "pickup_hand.png")
     if os.path.exists(icon_path):
         tpl = cv2.imread(icon_path)
         if tpl is not None:
-            # ค้นหาบริเวณฝั่งขวาและตรงกลางรอบปุ่มแอ็กชัน
             roi = screen[300:660, 200:1160]
             if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                 res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
@@ -125,7 +123,6 @@ def check_pickup_hand(screen):
                 if val >= 0.55:
                     return True, 200 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
 
-    # สำรอง: วัดพิกเซลสีขาวจุดปุ่มมือลอย
     hand_roi = screen[350:440, 1000:1090]
     gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
     if np.sum(gray > 200) > 220:
@@ -135,21 +132,17 @@ def check_pickup_hand(screen):
 
 
 def check_pick_all_dialog(screen):
-    """ตรวจจับปุ่มสีเขียว Pick All บนหน้าต่างเก็บของ"""
     if screen is None:
         return False, 0, 0
 
-    # โซนปุ่ม Pick All ฝั่งซ้ายกลางจอ
     roi = screen[480:600, 260:410]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    # กรองเฉดสีเขียวของปุ่ม Pick All
     mask_green = cv2.inRange(hsv, np.array([35, 70, 70]), np.array([85, 255, 255]))
     green_pixels = np.sum(mask_green > 0)
 
     if green_pixels > 400:
         return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
 
-    # สำรอง: ตรวจด้วย OCR
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     text = pytesseract.image_to_string(gray, config=r"--psm 7").strip()
     if any(k in text.lower() for k in ["pick", "all", "เก็บ"]):
@@ -159,7 +152,6 @@ def check_pick_all_dialog(screen):
 
 
 def detect_target_tree(screen):
-    """ตรวจหาต้นไม้จากไฟล์ภาพใน icons/ 100%"""
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0
 
@@ -208,7 +200,6 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
-    """ตรวจสอบชื่อเป้าหมายและแถบเลือด"""
     if screen is None:
         return False, "ไม่พบชื่อ"
 
@@ -295,7 +286,7 @@ def calculate_walk_angle(target_x):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ตัดต้นไม้ -> เจอรูปมือกดทันที -> กด Pick All -> เริ่มรอบใหม่")
+    print("[*] UtopiaFarmAI: ตัดต้นไม้ -> เจอรูปมือกดทันที -> กด Pick All -> พัก 5 วิ -> เริ่มรอบใหม่")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     print("=" * 60)
     time.sleep(2)
@@ -356,7 +347,6 @@ def main():
         for step in range(20):
             curr_scr = get_screen()
 
-            # ถ้าเจอปุ่มรูปมือให้หยุดเดินทันที
             if check_pickup_hand(curr_scr)[0]:
                 print(f"\n[🎯] ถึงระยะประชิดตัวละครแล้ว (พบปุ่มเก็บของ)!")
                 break
@@ -413,23 +403,19 @@ def main():
         # 5. ฟันจนเลือดหมด หรือขึ้นรูปมือ -> หยุดตีทันที
         print(f"[✓] ยืนยันชื่อถูกต้อง! เริ่มต้นฟัน {tree_type_name}...")
         hits = 0
-        tree_fallen = False
 
         while hits < 40:
             hits += 1
             tap(1100, 530)
             time.sleep(0.36)
 
-            # ตรวจสอบทุกๆ 2 ครั้งว่าเลือดหมดหรือปุ่มรูปมือขึ้นหรือยัง
             if hits % 2 == 0:
                 chk_scr = get_screen()
                 hand_found, hx, hy, _ = check_pickup_hand(chk_scr)
                 name_alive, _ = check_target_name_match(chk_scr)
 
-                # ถ้าขึ้นรูปมือ หรือเลือด/ชื่อหายไป ให้หยุดฟันทันที
                 if hand_found or not name_alive:
                     print(f"\n[🛑] เลือดหมด/พบปุ่มรูปมือขึ้นมาแล้ว! (หยุดฟันทันทีหลังตีไป {hits} ครั้ง)")
-                    tree_fallen = True
                     break
 
         # 6. กดปุ่มรูปมือ -> หน้าต่างเปิด -> กดปุ่ม Pick All สีเขียว
@@ -442,7 +428,6 @@ def main():
             tap(hx, hy)
             time.sleep(0.5)
 
-        # ตรวจและแตะปุ่ม Pick All สีเขียว
         dialog_scr = get_screen()
         pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
 
@@ -452,15 +437,20 @@ def main():
             time.sleep(0.3)
             tap(px, py)
         else:
-            # สำรองกดที่พิกัดปุ่ม Pick All โดยตรง
             print("[📦] แตะพิกัด Pick All (335, 545)...")
             tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
             time.sleep(0.3)
             tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
 
-        print(f"[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์! ชื่อต้นไม้หายไปแล้ว")
+        print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์! ชื่อต้นไม้หายไปแล้ว")
+
+        # พักรอ 5 วินาทีก่อนเริ่มรอบใหม่
+        print("[⏳] รอนิ่ง 5 วินาทีเพื่อรอไอเทมและแอนิเมชันในเกมเคลียร์สมบูรณ์...")
+        for wait_sec in range(5, 0, -1):
+            print(f"[*] พักรอ... เหลือ {wait_sec} วิ")
+            time.sleep(1.0)
+
         print("[🚀] เริ่มต้นสแกนหาต้นต่อไปทันที...\n")
-        time.sleep(0.8)
 
 
 if __name__ == "__main__":
