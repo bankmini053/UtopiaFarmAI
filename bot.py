@@ -275,10 +275,11 @@ def check_target_name_match(screen):
 
 
 def pitch_camera_down():
-    """รูดปรับมุมมองกล้องก้มลงพื้นจนสุด (Top-Down View)"""
-    cx, cy = 850, 480
-    swipe_screen(cx, cy, cx, cy - 350, duration=300)
+    """รูดนิ้วจากบนลงล่าง เพื่อกดมุมกล้องให้ก้มมองพื้น (Top-Down)"""
+    cx, cy = 850, 260
+    swipe_screen(cx, cy, cx, cy + 340, duration=280)
     time.sleep(0.4)
+
 
 
 def check_topdown_proximity(screen):
