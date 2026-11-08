@@ -166,4 +166,123 @@ def walk_direction(deg=0, duration_ms=450):
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.15)
 
-def rotate_view_right(
+def rotate_view_right(dist=180):
+    cx, cy = 850, 240
+    swipe_screen(cx, cy, cx - dist, cy, duration=240)
+    time.sleep(0.4)
+
+def main():
+    print("=" * 60)
+    print("[*] UtopiaFarmAI: เจอดักหยุด 5 วิ -> ระบุวัตถุ+พิกัด -> เดินเช็กขนาดใหญ่ขึ้น")
+    print(f"[*] โฟลเดอร์ไอคอน: {ICONS_DIR}")
+    print("=" * 60)
+    time.sleep(2)
+
+    while True:
+        target_found = False
+        target_name = ""
+        initial_area = 0
+
+        # 1. กวาดสายตา 360 องศา (8 ทิศทาง)
+        print("\n[*] กวาดสายตา 360 องศาค้นหาเป้าหมาย...")
+        for step in range(8):
+            scr = get_screen()
+            found, name, cx, area, h = analyze_target(scr)
+            if found:
+                target_found = True
+                target_name = name
+                initial_area = area
+                print(f"\n[🎯] ตรวจพบเป้าหมายที่มุมมอง {step + 1}/8!")
+                break
+            else:
+                print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
+                rotate_view_right(dist=180)
+
+        if not target_found:
+            print("[!] ไม่พบเป้าหมายรอบตัว -> สุ่มก้าวเดินเพื่อเปลี่ยนมุม...")
+            walk_direction(0, duration_ms=900)
+            continue
+
+        # 2. หยุดนิ่ง 5 วินาที พร้อมวิเคราะห์สิ่งที่เห็นและอ่านพิกัด
+        print("[🛑] สั่งหยุดนิ่งสนิท 5 วินาทีเพื่อวิเคราะห์...")
+        for sec in range(5, 0, -1):
+            print(f"[*] หยุดรอ... เหลือ {sec} วิ")
+            time.sleep(1.0)
+
+        analysis_scr = get_screen()
+        coords = extract_coords(analysis_scr)
+        _, final_name, _, base_area, base_h = analyze_target(analysis_scr)
+
+        print("\n" + "=" * 50)
+        print(f"[🔍] ผลการวิเคราะห์หน้าจอ:")
+        print(f"  - สิ่งที่เห็นตรงหน้า : {final_name if final_name else target_name}")
+        print(f"  - พิกัดตำแหน่งปัจจุบัน : {coords if coords else 'ไม่สามารถระบุได้'}")
+        print(f"  - ขนาดเริ่มต้นของวัตถุ : {base_area:.0f} พิกเซล (สูง {base_h}px)")
+        print("=" * 50)
+
+        # 3. เริ่มเดินเข้าหา: เช็กขนาดใหญ่ขึ้น = ถูกทาง / ถ้าไม่ใหญ่ = สุ่มองศาวงล้อ
+        current_deg = 0
+        last_area = base_area
+        success = False
+
+        print("\n[↑] เริ่มต้นเดินเข้าหาเป้าหมาย...")
+        for step in range(16):
+            # ตรวจสอบปุ่มรูปมือก่อนทุกครั้ง
+            curr_scr = get_screen()
+            hand_ok, hx, hy, hinfo = check_hand_icon(curr_scr)
+            if hand_ok:
+                print(f"\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว! ({hinfo}) ที่พิกัด ({hx}, {hy})")
+                tap(hx, hy)
+                time.sleep(0.3)
+                tap(hx, hy)
+                success = True
+                break
+
+            # เดินตามองศาปัจจุบัน
+            walk_direction(current_deg, duration_ms=450)
+            time.sleep(0.15)
+
+            # ตรวจจับขนาดวัตถุหลังก้าวเดิน
+            step_scr = get_screen()
+            found_step, _, _, new_area, new_h = analyze_target(step_scr)
+
+            if found_step:
+                print(f"[*] ก้าวที่ {step + 1} (มุม {current_deg}°) | ขนาด: {new_area:.0f} (เดิม: {last_area:.0f})")
+
+                # ถ้าขนาดใหญ่ขึ้นชัดเจน แสดงว่าเดินถูกทางแล้ว
+                if new_area > last_area * 1.05:
+                    print(f"[✓] ถูกทางแล้ว! เป้าหมายขยายใหญ่ขึ้น -> เดินหน้ามุมนี้ต่อ")
+                    last_area = new_area
+                # ถ้าวัตถุเริ่มเล็กลง แสดงว่าเดินเฉไฉ -> สุ่มปรับองศาวงล้อเดินใหม่
+                elif new_area < last_area * 0.85:
+                    current_deg = random.choice([330, 30, 300, 60, 0])
+                    print(f"[⚠️] เป้าหมายเล็กลง สุ่มปรับมุมเดินใหม่เป็น: {current_deg}°")
+                else:
+                    last_area = max(last_area, new_area)
+
+                # ถ้าวัตถุใหญ่เต็มจอ (ระยะประชิด)
+                if new_area >= 12000 or new_h >= 240:
+                    print(f"\n[🎯] เป้าหมายขยายใหญ่เต็มจอแล้ว (ถึงตัวเป้าหมาย)!")
+                    time.sleep(0.3)
+                    # ลองแตะปุ่มรูปมือหรือปุ่มโจมตี
+                    final_hand, fx, fy, _ = check_hand_icon(get_screen())
+                    if final_hand:
+                        tap(fx, fy)
+                    else:
+                        tap(1100, 530)
+                    success = True
+                    break
+            else:
+                # ถ้าหลุดเฟรม สุ่มองศาวงล้อหมุนกลับมารับ
+                current_deg = random.choice([45, 315, 90, 270])
+                print(f"[?] วัตถุคลาดเคลื่อน สุ่มมุมค้นหาใหม่: {current_deg}°")
+
+        if success:
+            print("\n[✓] ทำภารกิจกับเป้าหมายสำเร็จ!")
+        else:
+            print("\n[!] ครบจำนวนก้าวแล้ว -> เริ่มรอบสแกนใหม่")
+
+        time.sleep(1.5)
+
+if __name__ == "__main__":
+    main()
