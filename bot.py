@@ -560,7 +560,7 @@ def main():
         # ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ (คำนวณสดตลอดเวลา ไม่ก้มหัวลงพื้น)
         print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมายตามแนวระนาบปกติ (คำนวณสดตลอดเวลา)...")
         reached_close = False
-
+        
         for step in range(30):
                 for step in range(30):
             curr_scr = get_screen()
@@ -571,8 +571,8 @@ def main():
                 break
 
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-
-            if found_step:
+                    
+           if found_step:
                 ang = pixel_to_angle(cur_x)
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
