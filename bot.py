@@ -576,7 +576,7 @@ def main():
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
                     curr_scr = get_screen()
-                    _, _, cur_x, cur_y, cur_h = detect_target_tree(curr_scr)
+                  found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - (SCREEN_W // 2)
