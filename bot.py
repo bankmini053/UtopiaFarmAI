@@ -632,15 +632,15 @@ def main():
             hits += 1
             tap(1100, 530)
             time.sleep(0.35)
-
+            
             if hits % 2 == 0:
                 chk_scr = get_screen()
-                is_hand, hand_x, hand_y, hand_src = check_pickup_hand(chk_scr)
-                if is_hand:
+                finished, hx, hy = check_tree_cut_finished(chk_scr)
+                if finished:
                     hand_detected = True
-                    hx, hy = hand_x, hand_y
-                    print(f"\n[🖐️] ตรวจพบปุ่มรูปมือในจอ [{hand_src}] หลังตีไป {hits} ครั้ง!")
+                    print(f"\n[🖐️] ตัดเสร็จสมบูรณ์! ตรวจพบ No_Name หรือ มือ.png หลังตีไป {hits} ครั้ง")
                     break
+
 
         if not hand_detected:
             final_chk = get_screen()
@@ -655,11 +655,16 @@ def main():
             print("=" * 60)
             return
 
-            print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
+                    # ถ้าหาพิกัดมือไม่เจอตรง ๆ ให้แตะพิกัดกึ่งกลางจอโซนเก็บของแทน
+        if hx == 0 and hy == 0:
+            hx, hy = 760, 420
+
+        print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
         tap(hx, hy)
         time.sleep(0.3)
         tap(hx, hy)
         time.sleep(1.2)
+
 
         # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
         print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ปุ่มสีเขียว / คำว่า 'เก็บ')...")
