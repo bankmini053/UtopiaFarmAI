@@ -309,61 +309,65 @@ def check_axe_status(screen):
     return True
 
 
-def detect_target_tree(screen):
+def check_target_name_match(screen):
+    """
+    ข้อ 4: บังคับตรวจชื่อต้นไม้เหนือหลอดเลือด
+    - ต้องตรงกับ Name_Rubber_tree.png หรือ OCR พบ Rubber Tree / ยางพารา เท่านั้น
+    - ถ้าเจอเลือดแต่ชื่อไม่ใช่ (เช่น Fern Tree) -> ให้ถือว่าไม่ใช่เป้าหมาย เพื่อหมุนหาต้นใหม่
+    """
     if screen is None:
-        return False, "ไม่พบ", 0, 0, 0, 0
+        return False, False, "ไม่พบภาพหน้าจอ"
 
-    target_roi = screen[40:620, 80:1200]
-    sh, sw = target_roi.shape[:2]
-    gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
+    # โซนป้ายชื่อและหลอดเลือดมุมขวาบน
+    roi = screen[100:360, 750:1270]
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-    # เปลี่ยนชุดไฟล์ต้นไม้เป็น 4 ช่วงเวลา เช้า-เย็น
-    tree_files = [
-        "Rubber_tree.png",
-        "Rubber_tree2.png",
-        "Rubber_tree3.png",
-        "Rubber_tree4.png"
-    ]
+    # ตรวจจับแถบเลือดสีแดง
+    mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
+    mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
+    red_count = int(np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0))
+    has_blood = red_count > 45
 
-    best_match_val = -1
-    best_x = 0
-    best_y = 0
-    best_h = 0
-    best_area = 0
-    matched_filename = ""
+    # 1. เทียบไฟล์ Name_Rubber_tree.png
+    f_has_blood = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
+    val_has_blood = 0.0
+    if os.path.exists(f_has_blood):
+        tpl1 = cv2.imread(f_has_blood)
+        if tpl1 is not None and roi.shape[0] >= tpl1.shape[0] and roi.shape[1] >= tpl1.shape[1]:
+            res1 = cv2.matchTemplate(roi, tpl1, cv2.TM_CCOEFF_NORMED)
+            _, val_has_blood, _, _ = cv2.minMaxLoc(res1)
 
-    for fname in tree_files:
-        icon_path = os.path.join(ICONS_DIR, fname)
-        if not os.path.exists(icon_path):
-            continue
+    # 2. เทียบไฟล์ No_Name_Rubber_tree.png (กรณีต้นไม้ล้ม/ตายแล้ว)
+    f_no_blood = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
+    val_no_blood = 0.0
+    if os.path.exists(f_no_blood):
+        tpl2 = cv2.imread(f_no_blood)
+        if tpl2 is not None and roi.shape[0] >= tpl2.shape[0] and roi.shape[1] >= tpl2.shape[1]:
+            res2 = cv2.matchTemplate(roi, tpl2, cv2.TM_CCOEFF_NORMED)
+            _, val_no_blood, _, _ = cv2.minMaxLoc(res2)
 
-        template = cv2.imread(icon_path, cv2.IMREAD_GRAYSCALE)
-        if template is None:
-            continue
+    # 3. OCR สแกนเฉพาะตัวอักษรสีขาว
+    lower_white = np.array([0, 0, 180])
+    upper_white = np.array([180, 50, 255])
+    mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
+    raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip().lower()
 
-        for scale in [0.5, 0.7, 1.0, 1.3, 1.6]:
-            tw = int(template.shape[1] * scale)
-            th = int(template.shape[0] * scale)
+    # ดักชื่อต้นไม้อื่นที่ไม่ใช่ต้นยางพารา (เช่น Fern Tree ในภาพ)
+    if any(k in raw_ocr for k in ["fern", "เฟิร์น", "stone", "หิน"]):
+        return False, False, f"พบต้นไม้อื่น ({raw_ocr}) ไม่ใช่ต้นยางพารา -> หมุนหาใหม่"
 
-            if th >= sh or tw >= sw or th < 25 or tw < 25:
-                continue
+    # ตรวจว่าใช่ต้นไม้ล้มแล้วหรือไม่
+    if val_no_blood >= 0.48 or (not has_blood and any(k in raw_ocr for k in ["rubber", "tree", "ยาง"])):
+        return False, True, f"ต้นยางพาราล้มแล้ว (พร้อมเก็บของ) | OCR: '{raw_ocr}'"
 
-            resized_tpl = cv2.resize(template, (tw, th))
-            res = cv2.matchTemplate(gray_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    # เงื่อนไขยืนยันว่าเป็นต้นยางพาราจริง + มีเลือด
+    is_rubber_name = (val_has_blood >= 0.44) or any(k in raw_ocr for k in ["rubber", "tree", "ยาง", "พารา"])
 
-            if max_val >= 0.46 and max_val > best_match_val:
-                best_match_val = max_val
-                best_x = 80 + max_loc[0] + (tw // 2)
-                best_y = 40 + max_loc[1] + (th // 2)
-                best_h = th
-                best_area = tw * th
-                matched_filename = f"{fname} ({max_val:.2f})"
+    if is_rubber_name and has_blood:
+        return True, False, f"ยืนยันต้นยางพาราถูกต้องและมีเลือด (ไอคอน: {val_has_blood:.2f}, เลือด: {red_count}px, OCR: '{raw_ocr}')"
 
-    if best_match_val >= 0.46:
-        return True, matched_filename, best_x, best_y, best_area, best_h
+    return False, False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่ใช่ต้นยาง (ไอคอน: {val_has_blood:.2f}, OCR: '{raw_ocr}')"
 
-    return False, "ไม่พบ", 0, 0, 0, 0
 
 
 
