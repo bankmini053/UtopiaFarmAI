@@ -28,19 +28,18 @@ def get_screen():
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: เครื่องมือตรวจจับสายตาบอท (Visual Debug)")
+    print("[*] UtopiaFarmAI: ตรวจจับสายตาบอท (จำกัด 5 ตำแหน่ง)")
     print("=" * 60)
 
-    # นับถอยหลัง 5 วินาทีเพื่อให้สลับหน้าจอเข้าเกม
-    print("\n[⏳] กำลังเริ่มทำงานใน 5 วินาที... (สลับหน้าจอเข้าเกมตอนนี้)")
+    print("\n[⏳] เริ่มทำงานใน 5 วินาที... (สลับหน้าจอเข้าเกมตอนนี้)")
     for i in range(5, 0, -1):
         print(f"[*] นับถอยหลัง... {i} วินาที")
         time.sleep(1.0)
 
-    print("\n[📸] กำลังแคปหน้าจอและวิเคราะห์เป้าหมาย...")
+    print("\n[📸] แคปภาพหน้าจอและกำลังวิเคราะห์...")
     screen = get_screen()
     if screen is None:
-        print("[!] ไม่สามารถแคปภาพหน้าจอได้")
+        print("[!] แคปภาพหน้าจอไม่สำเร็จ")
         return
 
     debug_img = screen.copy()
@@ -48,13 +47,7 @@ def main():
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
     tree_files = ["tree_name1.png", "tree_coconut.png", "tree_coconut2.png"]
-    found_any = False
-
-    print("\n" + "=" * 55)
-    print("  รายชื่อและพิกัดต้นไม้ที่บอทตรวจพบในจอ (แบบกรองกรอบซ้ำ):")
-    print("=" * 55)
-
-    tree_count = 0
+    found_targets = []
 
     for fname in tree_files:
         icon_path = os.path.join(ICONS_DIR, fname)
@@ -67,58 +60,76 @@ def main():
 
         gray_tpl = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
-        for scale in [0.6, 0.8, 1.0, 1.3, 1.6]:
+        for scale in [0.7, 1.0, 1.3]:
             tw = int(gray_tpl.shape[1] * scale)
             th = int(gray_tpl.shape[0] * scale)
 
-            if th >= target_roi.shape[0] or tw >= target_roi.shape[1] or th < 25 or tw < 25:
+            if th >= target_roi.shape[0] or tw >= target_roi.shape[1] or th < 30 or tw < 30:
                 continue
 
             res = cv2.matchTemplate(gray_roi, cv2.resize(gray_tpl, (tw, th)), cv2.TM_CCOEFF_NORMED)
-            locs = np.where(res >= 0.48)
+            locs = np.where(res >= 0.50)
 
-            raw_boxes = []
             for pt in zip(*locs[::-1]):
-                bx = int(80 + pt[0])
-                by = int(40 + pt[1])
-                raw_boxes.append([bx, by, tw, th])
-                raw_boxes.append([bx, by, tw, th])
+                cx = 80 + pt[0] + (tw // 2)
+                cy = 40 + pt[1] + (th // 2)
 
-            if len(raw_boxes) == 0:
-                continue
+                # ดักจับไม่ให้เก็บตำแหน่งที่อยู่ใกล้กันเกิน 60px (ตัดจุดซ้ำ)
+                is_duplicate = False
+                for t in found_targets:
+                    if abs(cx - t['x']) < 60 and abs(cy - t['y']) < 60:
+                        is_duplicate = True
+                        break
 
-            # รวมกรอบพิกเซลที่ซ้อนทับกันให้เหลือเพียง 1 กรอบต่อ 1 จุด
-            grouped_boxes, _ = cv2.groupRectangles(raw_boxes, groupThreshold=1, eps=0.25)
+                if not is_duplicate:
+                    found_targets.append({
+                        'file': fname,
+                        'scale': scale,
+                        'x': cx,
+                        'y': cy,
+                        'w': tw,
+                        'h': th,
+                        'rx': 80 + pt[0],
+                        'ry': 40 + pt[1]
+                    })
 
-            for (rx, ry, bw, bh) in grouped_boxes:
-                tree_count += 1
-                found_any = True
-                cx = rx + (bw // 2)
-                cy = ry + (bh // 2)
+                # เมื่อเก็บครบ 5 ตำแหน่ง ให้ตัดการค้นหาทันที
+                if len(found_targets) >= 5:
+                    break
+            if len(found_targets) >= 5:
+                break
+        if len(found_targets) >= 5:
+            break
 
-                print(f"[🌲 ต้นที่ {tree_count}] ไฟล์: {fname} (ขนาดสเกล {scale:.1f}x)")
-                print(f"    - พิกัดกึ่งกลางเป้าหมาย : X = {cx}, Y = {cy}")
-                print(f"    - ขนาดกรอบ (Bounding Box) : กว้าง {bw}px, สูง {bh}px")
-                print(f"    - ขอบเขตพื้นที่ : ({rx}, {ry}) ถึง ({rx + bw}, {ry + bh})")
-                print("-" * 50)
+    print("\n" + "=" * 55)
+    print(f"  รายงาน 5 ตำแหน่งต้นไม้ที่ตรวจพบ (ตัดจุดซ้ำซ้อนแล้ว):")
+    print("=" * 55)
 
-                # วาดกรอบสี่เหลี่ยมสีเขียวและจุดแดงลงบนภาพ
-                cv2.rectangle(debug_img, (rx, ry), (rx + bw, ry + bh), (0, 255, 0), 3)
-                cv2.circle(debug_img, (cx, cy), 6, (0, 0, 255), -1)
-                cv2.putText(debug_img, f"{fname}", (rx, max(25, ry - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-
-    # วาดจุดกึ่งกลางจอ (ตำแหน่งสายตา/หัวตัวละคร)
-    cv2.circle(debug_img, (640, 360), 8, (255, 255, 0), -1)
-    cv2.putText(debug_img, "Center (640, 360)", (540, 395),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
-
-    if not found_any:
-        print("[!] ไม่พบต้นไม้ใด ๆ ในหน้าจอนี้ตามไฟล์ต้นแบบใน icons")
+    if len(found_targets) == 0:
+        print("[!] ไม่พบต้นไม้ในระยะสายตานี้")
     else:
+        for idx, t in enumerate(found_targets, 1):
+            print(f"\n[🌲 ตำแหน่งที่ {idx}/5] ไฟล์: {t['file']} (สเกล {t['scale']:.1f}x)")
+            print(f"    - พิกัดกึ่งกลาง : X = {t['x']}, Y = {t['y']}")
+            print(f"    - ขนาดกรอบ     : กว้าง {t['w']}px, สูง {t['h']}px")
+            print(f"    - ขอบเขตภาพ    : ({t['rx']}, {t['ry']}) ถึง ({t['rx'] + t['w']}, {t['ry'] + t['h']})")
+
+            # วาดกรอบลงรูปภาพ
+            cv2.rectangle(debug_img, (t['rx'], t['ry']), (t['rx'] + t['w'], t['ry'] + t['h']), (0, 255, 0), 3)
+            cv2.circle(debug_img, (t['x'], t['y']), 6, (0, 0, 255), -1)
+            cv2.putText(debug_img, f"#{idx} {t['file']}", (t['rx'], max(25, t['ry'] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+
+        # จุดกึ่งกลางจอ
+        cv2.circle(debug_img, (640, 360), 8, (255, 255, 0), -1)
+        cv2.putText(debug_img, "Center Screen (640, 360)", (520, 395),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+
         cv2.imwrite(OUTPUT_DEBUG_IMG, debug_img)
-        print(f"\n[✓] ประมวลผลเสร็จสิ้น! พบต้นไม้ทั้งหมด {tree_count} จุด")
-        print(f"[*] บันทึกภาพผลลัพธ์พร้อมตีกรอบไว้ที่: {OUTPUT_DEBUG_IMG}")
+        print("\n" + "=" * 55)
+        print(f"[✓] แสดงผลครบ 5 ตำแหน่งและหยุดการทำงานเรียบร้อย")
+        print(f"[*] บันทึกภาพที่: {OUTPUT_DEBUG_IMG}")
+        print("=" * 55)
 
 
 if __name__ == "__main__":
