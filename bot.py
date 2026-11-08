@@ -33,15 +33,14 @@ def get_screen():
     return None
 
 def extract_coords(screen):
-    """อ่านพิกัดตำแหน่งตัวละครจากมุมซ้ายบน"""
     if screen is None:
         return None
-    roi = screen[180:300, 40:270]
+    roi = screen[80:260, 580:780]
     if roi.size == 0:
         return None
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-    for th in [175, 195, 215]:
+    resized = cv2.resize(gray, (0, 0), fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+    for th in [160, 185, 210]:
         _, thresh = cv2.threshold(resized, th, 255, cv2.THRESH_BINARY)
         matches = re.findall(r"\d{5}", pytesseract.image_to_string(thresh, config=r"--psm 6 -c tessedit_char_whitelist=0123456789,."))
         if len(matches) >= 2:
@@ -52,18 +51,18 @@ def extract_coords(screen):
                 pass
     return None
 
-def match_icon(screen, icon_filename, threshold=0.72, roi=None):
-    """ค้นหาไอคอนจากโฟลเดอร์ icons/"""
+def match_icon(screen, icon_filename, threshold=0.68, roi=None):
+    """ค้นหาตำแหน่งภาพไอคอนต้นแบบบนหน้าจอ"""
     if screen is None:
-        return False, 0, 0, 0.0
+        return False, 0, 0, 0, 0, 0.0
 
     icon_path = os.path.join(ICONS_DIR, icon_filename)
     if not os.path.exists(icon_path):
-        return False, 0, 0, 0.0
+        return False, 0, 0, 0, 0, 0.0
 
     template = cv2.imread(icon_path)
     if template is None:
-        return False, 0, 0, 0.0
+        return False, 0, 0, 0, 0, 0.0
 
     target_img = screen
     offset_x, offset_y = 0, 0
@@ -75,7 +74,7 @@ def match_icon(screen, icon_filename, threshold=0.72, roi=None):
     th, tw = template.shape[:2]
     sh, sw = target_img.shape[:2]
     if th > sh or tw > sw:
-        return False, 0, 0, 0.0
+        return False, 0, 0, 0, 0, 0.0
 
     res = cv2.matchTemplate(target_img, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
@@ -83,88 +82,116 @@ def match_icon(screen, icon_filename, threshold=0.72, roi=None):
     if max_val >= threshold:
         center_x = offset_x + max_loc[0] + (tw // 2)
         center_y = offset_y + max_loc[1] + (th // 2)
-        return True, center_x, center_y, max_val
+        return True, center_x, center_y, tw, th, max_val
 
-    return False, 0, 0, max_val
+    return False, 0, 0, 0, 0, max_val
 
-def check_hand_icon(screen):
-    """ตรวจจับปุ่มรูปมือจากไอคอนและค่าแสง"""
+def check_pickup_hand(screen):
+    """ตรวจจับปุ่ม pickup_hand.png สำหรับเก็บของ"""
+    # 1. เทียบภาพกับ pickup_hand.png โดยตรง
+    found, cx, cy, _, _, val = match_icon(screen, "pickup_hand.png", threshold=0.65, roi=(300, 480, 950, 1160))
+    if found:
+        return True, cx, cy, f"pickup_hand.png ({val:.2f})"
+
+    # เผื่อชื่อไฟล์ hand.png อื่นๆ
     if os.path.exists(ICONS_DIR):
-        for name in os.listdir(ICONS_DIR):
-            if "hand" in name.lower():
-                found, x, y, conf = match_icon(screen, name, threshold=0.70, roi=(320, 460, 960, 1140))
-                if found:
-                    return True, x, y, f"ไอคอน {name} ({conf:.2f})"
+        for fname in os.listdir(ICONS_DIR):
+            if "hand" in fname.lower() and fname != "pickup_hand.png" and fname.endswith((".png", ".jpg")):
+                f_ok, fx, fy, _, _, fval = match_icon(screen, fname, threshold=0.65, roi=(300, 480, 950, 1160))
+                if f_ok:
+                    return True, fx, fy, f"{fname} ({fval:.2f})"
 
     # ระบบสำรองวัดพิกเซลสีขาวเหนือปุ่มดาบ
     hand_roi = screen[350:440, 1000:1090]
     gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
     if np.sum(gray > 200) > 220:
-        return True, 1045, 390, "ตรวจจับปุ่มขาว"
+        return True, 1045, 390, "วัดความสว่างปุ่มขาว"
 
     return False, 0, 0, ""
 
-def analyze_target(screen):
+def detect_coconut_tree(screen):
     """
-    วิเคราะห์วัตถุในจอ:
-    - ตรวจหาไอคอนใน icons/
-    - หรือตรวจหากล่องสมบัติ / ต้นไม้จากเฉดสีและขนาด
-    คืนค่า: (found, target_name, center_x, area, height)
+    ตรวจหาต้นมะพร้าว (รองรับ tree_coconut.png และ tree_coconut2.png ทั้ง 2 ลาย)
     """
     if screen is None:
-        return False, "", 0, 0, 0
+        return False, "ไม่พบ", 0, 0, 0
 
-    # 1. เช็กไอคอนในโฟลเดอร์ก่อน
+    # 1. สแกนหาจากไฟล์ template ลาย 1 และ ลาย 2
+    tree_templates = ["tree_coconut.png", "tree_coconut2.png"]
+    for t_name in tree_templates:
+        found, cx, cy, tw, th, val = match_icon(screen, t_name, threshold=0.62, roi=(50, 480, 100, 1180))
+        if found:
+            return True, f"ไอคอน {t_name} ({val:.2f})", cx, tw * th, th
+
+    # 2. ระบบสำรอง: กรองเฉดสีลำต้นมะพร้าว (สีเนื้อไม้/ครีมเทาลายปล้อง)
+    roi = screen[50:460, 100:1180]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lower_bark = np.array([8, 20, 70])
+    upper_bark = np.array([32, 180, 230])
+    mask = cv2.inRange(hsv, lower_bark, upper_bark)
+    clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best_x, max_area, best_h = 0, 0, 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area > 1200:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if h >= 80 and area > max_area:
+                max_area = area
+                best_h = h
+                best_x = x + 100 + (w // 2)
+
+    if max_area > 0:
+        return True, "เฉดสีลำต้นมะพร้าว", best_x, max_area, best_h
+
+    return False, "ไม่พบ", 0, 0, 0
+
+def check_target_name_match(screen):
+    """ตรวจสอบชื่อเป้าหมายและแถบเลือดหลังฟัน 1 ครั้ง"""
+    if screen is None:
+        return False, "ไม่พบชื่อ"
+
+    # เทียบจากไฟล์ภาพป้ายชื่อถ้ามีใน icons/
     if os.path.exists(ICONS_DIR):
         for fname in os.listdir(ICONS_DIR):
-            if not "hand" in fname.lower() and fname.endswith((".png", ".jpg")):
-                found, ix, iy, conf = match_icon(screen, fname, threshold=0.68, roi=(60, 520, 100, 1180))
+            if "name" in fname.lower() and fname.endswith((".png", ".jpg")):
+                found, _, _, _, _, val = match_icon(screen, fname, threshold=0.68, roi=(70, 220, 420, 860))
                 if found:
-                    return True, f"ไอคอน {fname}", ix, 5000, 150
+                    return True, f"รูปป้ายชื่อตรงกับ {fname} ({val:.2f})"
 
-    # 2. ตรวจหากล่องสมบัติ (สีส้ม/น้ำตาลทอง)
-    roi = screen[60:550, 100:1180]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask_chest = cv2.bitwise_or(
-        cv2.inRange(hsv, np.array([5, 60, 60]), np.array([25, 255, 255])),
-        cv2.inRange(hsv, np.array([4, 20, 20]), np.array([28, 180, 140]))
+    # OCR ตัวหนังสือบนหัว
+    name_roi = screen[70:220, 420:860]
+    gray = cv2.cvtColor(name_roi, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    text = pytesseract.image_to_string(thresh, lang="eng+tha", config=r"--psm 7").strip()
+
+    keywords = ["tree", "palm", "coconut", "ต้น", "ไม้", "มะพร้าว"]
+    if any(k in text.lower() for k in keywords):
+        return True, f"ข้อความตรง: '{text}'"
+
+    # เช็กแถบเลือด (Health Bar)
+    bar_roi = screen[80:230, 450:830]
+    hsv = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2HSV)
+    mask_red = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255])),
+        cv2.inRange(hsv, np.array([170, 100, 100]), np.array([180, 255, 255]))
     )
-    clean_chest = cv2.morphologyEx(mask_chest, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours_c, _ = cv2.findContours(clean_chest, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for cnt in contours_c:
-        a = cv2.contourArea(cnt)
-        if a > 750:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if 0.5 <= float(cw:=w) / h <= 2.2:
-                return True, "กล่องสมบัติ (Treasure Chest)", x + 100 + (w // 2), a, h
+    if np.sum(mask_red > 0) > 80:
+        return True, f"พบแถบเลือด (ข้อความ: '{text}')"
 
-    # 3. ตรวจหาต้นไม้ (สีเนื้อไม้และใบ)
-    mask_tree = cv2.bitwise_or(
-        cv2.inRange(hsv, np.array([8, 30, 30]), np.array([28, 220, 180])),
-        cv2.inRange(hsv, np.array([32, 60, 40]), np.array([75, 255, 200]))
-    )
-    clean_tree = cv2.morphologyEx(mask_tree, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours_t, _ = cv2.findContours(clean_tree, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for cnt in contours_t:
-        a = cv2.contourArea(cnt)
-        if a > 900:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if h >= 75:
-                return True, "ต้นไม้ (Tree)", x + 100 + (w // 2), a, h
-
-    return False, "", 0, 0, 0
+    return False, text if text else "ไม่มีชื่อ"
 
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
 JOY_RADIUS   = 145
 
 def walk_direction(deg=0, duration_ms=450):
-    """ดันจอยสติ๊กตามองศา (0=หน้า, 90=ขวา, 180=หลัง, 270=ซ้าย หรือเฉียง)"""
     rad = math.radians(deg)
     tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
     ty = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(rad))
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
-    time.sleep(0.15)
+    time.sleep(0.12)
 
 def rotate_view_right(dist=180):
     cx, cy = 850, 240
@@ -173,116 +200,51 @@ def rotate_view_right(dist=180):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: เจอดักหยุด 5 วิ -> ระบุวัตถุ+พิกัด -> เดินเช็กขนาดใหญ่ขึ้น")
-    print(f"[*] โฟลเดอร์ไอคอน: {ICONS_DIR}")
+    print("[*] UtopiaFarmAI: ตรวจจับ tree_coconut (ลาย 1 & 2) + pickup_hand.png")
+    print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     print("=" * 60)
     time.sleep(2)
 
     while True:
-        target_found = False
-        target_name = ""
-        initial_area = 0
+        tree_found = False
+        detect_src = ""
+        base_area = 0
 
         # 1. กวาดสายตา 360 องศา (8 ทิศทาง)
-        print("\n[*] กวาดสายตา 360 องศาค้นหาเป้าหมาย...")
+        print("\n[*] กวาดสายตา 360 องศาค้นหาต้นมะพร้าว...")
         for step in range(8):
             scr = get_screen()
-            found, name, cx, area, h = analyze_target(scr)
+            found, src, cx, area, h = detect_coconut_tree(scr)
             if found:
-                target_found = True
-                target_name = name
-                initial_area = area
-                print(f"\n[🎯] ตรวจพบเป้าหมายที่มุมมอง {step + 1}/8!")
+                tree_found = True
+                detect_src = src
+                base_area = area
+                print(f"\n[🌴] ตรวจพบต้นมะพร้าวที่มุม {step + 1}/8! [{src}] (ขนาด: {area:.0f}, สูง: {h}px)")
                 break
             else:
                 print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
                 rotate_view_right(dist=180)
 
-        if not target_found:
-            print("[!] ไม่พบเป้าหมายรอบตัว -> สุ่มก้าวเดินเพื่อเปลี่ยนมุม...")
+        if not tree_found:
+            print("[!] ไม่พบต้นมะพร้าวรอบตัว -> ก้าวสุ่มเปลี่ยนมุมมอง...")
             walk_direction(0, duration_ms=900)
             continue
 
-        # 2. หยุดนิ่ง 5 วินาที พร้อมวิเคราะห์สิ่งที่เห็นและอ่านพิกัด
-        print("[🛑] สั่งหยุดนิ่งสนิท 5 วินาทีเพื่อวิเคราะห์...")
+        # 2. หยุดนิ่ง 5 วินาทีเพื่อวิเคราะห์ข้อมูล
+        print("[🛑] หยุดนิ่งสนิท 5 วินาทีเพื่อวิเคราะห์...")
         for sec in range(5, 0, -1):
             print(f"[*] หยุดรอ... เหลือ {sec} วิ")
             time.sleep(1.0)
 
         analysis_scr = get_screen()
         coords = extract_coords(analysis_scr)
-        _, final_name, _, base_area, base_h = analyze_target(analysis_scr)
+        _, _, _, start_area, start_h = detect_coconut_tree(analysis_scr)
 
         print("\n" + "=" * 50)
-        print(f"[🔍] ผลการวิเคราะห์หน้าจอ:")
-        print(f"  - สิ่งที่เห็นตรงหน้า : {final_name if final_name else target_name}")
+        print("[🔍] ผลการวิเคราะห์:")
+        print(f"  - แหล่งตรวจจับ       : {detect_src}")
         print(f"  - พิกัดตำแหน่งปัจจุบัน : {coords if coords else 'ไม่สามารถระบุได้'}")
-        print(f"  - ขนาดเริ่มต้นของวัตถุ : {base_area:.0f} พิกเซล (สูง {base_h}px)")
+        print(f"  - ขนาดลำต้นเริ่มต้น   : {start_area:.0f} พิกเซล (สูง {start_h}px)")
         print("=" * 50)
 
-        # 3. เริ่มเดินเข้าหา: เช็กขนาดใหญ่ขึ้น = ถูกทาง / ถ้าไม่ใหญ่ = สุ่มองศาวงล้อ
-        current_deg = 0
-        last_area = base_area
-        success = False
-
-        print("\n[↑] เริ่มต้นเดินเข้าหาเป้าหมาย...")
-        for step in range(16):
-            # ตรวจสอบปุ่มรูปมือก่อนทุกครั้ง
-            curr_scr = get_screen()
-            hand_ok, hx, hy, hinfo = check_hand_icon(curr_scr)
-            if hand_ok:
-                print(f"\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว! ({hinfo}) ที่พิกัด ({hx}, {hy})")
-                tap(hx, hy)
-                time.sleep(0.3)
-                tap(hx, hy)
-                success = True
-                break
-
-            # เดินตามองศาปัจจุบัน
-            walk_direction(current_deg, duration_ms=450)
-            time.sleep(0.15)
-
-            # ตรวจจับขนาดวัตถุหลังก้าวเดิน
-            step_scr = get_screen()
-            found_step, _, _, new_area, new_h = analyze_target(step_scr)
-
-            if found_step:
-                print(f"[*] ก้าวที่ {step + 1} (มุม {current_deg}°) | ขนาด: {new_area:.0f} (เดิม: {last_area:.0f})")
-
-                # ถ้าขนาดใหญ่ขึ้นชัดเจน แสดงว่าเดินถูกทางแล้ว
-                if new_area > last_area * 1.05:
-                    print(f"[✓] ถูกทางแล้ว! เป้าหมายขยายใหญ่ขึ้น -> เดินหน้ามุมนี้ต่อ")
-                    last_area = new_area
-                # ถ้าวัตถุเริ่มเล็กลง แสดงว่าเดินเฉไฉ -> สุ่มปรับองศาวงล้อเดินใหม่
-                elif new_area < last_area * 0.85:
-                    current_deg = random.choice([330, 30, 300, 60, 0])
-                    print(f"[⚠️] เป้าหมายเล็กลง สุ่มปรับมุมเดินใหม่เป็น: {current_deg}°")
-                else:
-                    last_area = max(last_area, new_area)
-
-                # ถ้าวัตถุใหญ่เต็มจอ (ระยะประชิด)
-                if new_area >= 12000 or new_h >= 240:
-                    print(f"\n[🎯] เป้าหมายขยายใหญ่เต็มจอแล้ว (ถึงตัวเป้าหมาย)!")
-                    time.sleep(0.3)
-                    # ลองแตะปุ่มรูปมือหรือปุ่มโจมตี
-                    final_hand, fx, fy, _ = check_hand_icon(get_screen())
-                    if final_hand:
-                        tap(fx, fy)
-                    else:
-                        tap(1100, 530)
-                    success = True
-                    break
-            else:
-                # ถ้าหลุดเฟรม สุ่มองศาวงล้อหมุนกลับมารับ
-                current_deg = random.choice([45, 315, 90, 270])
-                print(f"[?] วัตถุคลาดเคลื่อน สุ่มมุมค้นหาใหม่: {current_deg}°")
-
-        if success:
-            print("\n[✓] ทำภารกิจกับเป้าหมายสำเร็จ!")
-        else:
-            print("\n[!] ครบจำนวนก้าวแล้ว -> เริ่มรอบสแกนใหม่")
-
-        time.sleep(1.5)
-
-if __name__ == "__main__":
-    main()
+        # 3. เดินเข้าหาต้นมะพร้าว (เช็ก
