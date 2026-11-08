@@ -366,7 +366,7 @@ def detect_target_tree(screen):
     return False, "ไม่พบ", 0, 0, 0, 0
 
 
-def check_target_name_match(screen):
+
 def check_target_name_match(screen):
     """
     ข้อ 4: ตรวจสอบอ้างอิงไฟล์จากโฟลเดอร์ icons/ โดยตรง
