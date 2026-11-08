@@ -370,56 +370,10 @@ def check_target_name_match(screen):
 
 
 
+def detect_target_tree(screen):
+1. อัปเดตฟังก์ชัน check_target_name_match
+​บังคับว่าต้องตรวจพบไฟล์ Name_Rubber_tree.png หรือข้อความ OCR ต้องตรงกับคำว่ายางพาราเท่านั้น หากมีเลือดแดงแต่ชื่อคือ Fern หรือไม่ใช่ยางพารา จะตีความว่า ไม่ใช่เป้าหมาย ทันที เพื่อให้ตัวละครหันหน้าไปหาต้นอื่น:
 
-def check_target_name_match(screen):
-    """
-    ข้อ 4: ตรวจสอบอ้างอิงไฟล์จากโฟลเดอร์ icons/ โดยตรง
-    1. Name_Rubber_tree.png = มีชื่อ + มีหลอดเลือด -> พร้อมฟันต่อ
-    2. No_Name_Rubber_tree.png = มีชื่อ + ไม่มีหลอดเลือด -> ต้นไม้ล้ม/เสร็จแล้ว พร้อมเก็บ
-    """
-    if screen is None:
-        return False, False, "ไม่พบภาพหน้าจอ"
-
-    # กำหนดพื้นที่ป้ายชื่อและหลอดเลือดมุมขวาบนของจอ
-    roi = screen[100:360, 750:1270]
-
-    # --- ตรวจสอบไฟล์ที่ 1: Name_Rubber_tree.png (มีชื่อ + มีเลือด) ---
-    f_has_blood = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
-    val_has_blood = 0.0
-    if os.path.exists(f_has_blood):
-        tpl1 = cv2.imread(f_has_blood)
-        if tpl1 is not None and roi.shape[0] >= tpl1.shape[0] and roi.shape[1] >= tpl1.shape[1]:
-            res1 = cv2.matchTemplate(roi, tpl1, cv2.TM_CCOEFF_NORMED)
-            _, val_has_blood, _, _ = cv2.minMaxLoc(res1)
-            if val_has_blood >= 0.45:
-                return True, False, f"พบ Name_Rubber_tree.png ({val_has_blood:.2f}) -> มีเลือด พร้อมฟันต่อ"
-
-    # --- ตรวจสอบไฟล์ที่ 2: No_Name_Rubber_tree.png (มีชื่อ + ไม่มีเลือด) ---
-    f_no_blood = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
-    val_no_blood = 0.0
-    if os.path.exists(f_no_blood):
-        tpl2 = cv2.imread(f_no_blood)
-        if tpl2 is not None and roi.shape[0] >= tpl2.shape[0] and roi.shape[1] >= tpl2.shape[1]:
-            res2 = cv2.matchTemplate(roi, tpl2, cv2.TM_CCOEFF_NORMED)
-            _, val_no_blood, _, _ = cv2.minMaxLoc(res2)
-            if val_no_blood >= 0.45:
-                return False, True, f"พบ No_Name_Rubber_tree.png ({val_no_blood:.2f}) -> ต้นไม้ล้มแล้ว พร้อมเก็บ"
-
-    # เช็กเสริมด้วย HSV แถบสีแดงและ OCR
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
-    mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
-    red_count = int(np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0))
-
-    lower_white = np.array([0, 0, 185])
-    upper_white = np.array([180, 50, 255])
-    mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
-    raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip()
-
-    if red_count > 60:
-        return True, False, f"พบแถบเลือดแดง ({red_count}px, OCR: '{raw_ocr}') -> พร้อมฟันต่อ"
-
-    return False, False, f"เคาะไม่โดน/ไม่พบป้าย (มีเลือด: {val_has_blood:.2f}, ไร้เลือด: {val_no_blood:.2f}, OCR: '{raw_ocr}')"
 
 
 def walk_direction(deg=0, duration_ms=480):
