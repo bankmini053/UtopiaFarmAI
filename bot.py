@@ -1,8 +1,8 @@
 import os
 import re
+import sys
 import time
 import math
-import statistics
 import subprocess
 import cv2
 import numpy as np
@@ -26,11 +26,19 @@ LEARN_RATE = 0.6          # ความเร็วในการปรับ�
 DIAGONAL = False          # False = เดินสี่เหลี่ยม, True = เดินเฉียง (เฉพาะตอนไกล)
 TAP_OPEN = (820, 430)     # ปุ่มเปิดกล่อง
 
+# --- การอ่านภาพ (OCR) ---
+VERBOSE_OCR = True        # พิมพ์ผลอ่านทุกครั้ง (กี่โหวต/ค่าไหนบ้าง)
+EARLY_VOTES = 3           # ค่าไหนได้ครบกี่โหวตให้หยุดอ่านทันที
+MAX_JUMP = 25             # อ่านได้โหวตเดียว: ต้องไม่ต่างจากตำแหน่งก่อนหน้าเกินนี้
+# กรอบอ่านพิกัด (y1, y2, x1, x2) บนจอแนวนอน ลองหลายกรอบ
+ROIS = [(180, 300, 40, 270), (170, 310, 20, 300), (190, 290, 60, 260)]
+
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
 JOY_RADIUS = 145
 
 _last_screen = None
+LAST_POS = None
 
 
 # ------------------------------------------------------------ พื้นฐาน
@@ -51,40 +59,83 @@ def get_screen():
     return None
 
 
-# ------------------------------------------------------------ อ่านพิกัด (OCR)
-def ocr_candidates(roi):
-    """สร้างภาพหลายแบบให้ OCR ลอง เรียงจากเร็ว/ได้ผลบ่อยก่อน"""
-    big_bgr = cv2.resize(roi, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-    gray = cv2.cvtColor(big_bgr, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(big_bgr, cv2.COLOR_BGR2HSV)
-    # ตัวเลขสีขาว: อิ่มตัวต่ำ + สว่างสูง
-    yield cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 70, 255]))
-    for th in (195, 175, 215, 235, 150):
-        yield cv2.threshold(gray, th, 255, cv2.THRESH_BINARY)[1]
-    yield cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-
-def extract_coords(screen):
-    if screen is None:
-        return None
+# ------------------------------------------------------------ อ่านพิกัด (OCR หลายวิธี + โหวต)
+def crop_roi(screen, idx):
+    y1, y2, x1, x2 = ROIS[idx]
     h, w = screen.shape[:2]
     if w > h:
-        roi = screen[180:300, 40:270]
-    else:
-        roi = screen[40:270, 180:300]
-        roi = cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
-    if roi.size == 0:
-        return None
+        return screen[y1:y2, x1:x2]
+    roi = screen[x1:x2, y1:y2]            # จอแนวตั้ง: สลับแกนแล้วหมุน
+    return cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
 
-    cfg = r"--psm 6 -c tessedit_char_whitelist=0123456789,."
-    for img in ocr_candidates(roi):
-        raw = pytesseract.image_to_string(img, config=cfg)
-        for pattern in (r"\d{5}", r"\d{4,6}"):
-            nums = re.findall(pattern, raw)
-            if len(nums) >= 2:
-                x, y = int(nums[0]), int(nums[1])
-                if 17400 <= x <= 17600 and 15250 <= y <= 15400:
-                    return (x, y)
+
+def variants(roi):
+    """ภาพหลายแบบให้ OCR ลอง (ชื่อ, ภาพ, psm)"""
+    big = cv2.resize(roi, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+    white = cv2.inRange(hsv, np.array([0, 0, 200]), np.array([180, 70, 255]))
+    k = np.ones((2, 2), np.uint8)
+    yield "white", white, 6
+    yield "white+dilate", cv2.dilate(white, k), 6
+    yield "white-psm11", white, 11
+    for th in (195, 175, 215, 235, 150):
+        yield f"th{th}", cv2.threshold(gray, th, 255, cv2.THRESH_BINARY)[1], 6
+    yield "otsu", cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1], 6
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    yield "adaptive", cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, -15
+    ), 6
+
+
+def ocr_raw(img, psm):
+    return pytesseract.image_to_string(
+        img, config=f"--psm {psm} -c tessedit_char_whitelist=0123456789,."
+    )
+
+
+def parse(raw):
+    for pattern in (r"\d{5}", r"\d{4,6}"):
+        nums = re.findall(pattern, raw)
+        if len(nums) >= 2:
+            x, y = int(nums[0]), int(nums[1])
+            if 17400 <= x <= 17600 and 15250 <= y <= 15400:
+                return (x, y)
+    return None
+
+
+def vote_ocr(screen):
+    """อ่านด้วยหลายกรอบ x หลายวิธี แล้วนับโหวตแต่ละค่า"""
+    votes = {}
+    total = 0
+    for idx in range(len(ROIS)):
+        roi = crop_roi(screen, idx)
+        if roi.size == 0:
+            continue
+        for _name, img, psm in variants(roi):
+            total += 1
+            p = parse(ocr_raw(img, psm))
+            if p:
+                votes[p] = votes.get(p, 0) + 1
+            if votes and max(votes.values()) >= EARLY_VOTES:
+                return votes, total
+    return votes, total
+
+
+def pick(votes):
+    """เลือกค่าที่เชื่อถือได้ ไม่งั้นคืน None"""
+    if not votes:
+        return None
+    best_cnt = max(votes.values())
+    cands = [p for p, c in votes.items() if c == best_cnt]
+    if best_cnt >= 2:
+        return cands[0]
+    # โหวตเดียว: เชื่อเมื่อไม่กระโดดไกลจากตำแหน่งก่อนหน้า
+    if LAST_POS is not None:
+        cands.sort(key=lambda p: math.hypot(p[0] - LAST_POS[0], p[1] - LAST_POS[1]))
+        p = cands[0]
+        if math.hypot(p[0] - LAST_POS[0], p[1] - LAST_POS[1]) <= MAX_JUMP:
+            return p
     return None
 
 
@@ -98,24 +149,51 @@ def save_debug():
 
 
 def read_pos(timeout=NO_COORD_TIMEOUT):
-    """อ่านพิกัดสูงสุด 3 ครั้งแล้วเอามัธยฐาน ถ้าไม่เห็นเลยเกิน timeout คืน None"""
-    global _last_screen
+    """อ่านพิกัดจากหน้าจอ (โหวตหลายวิธี) ไม่เห็นเกิน timeout คืน None"""
+    global _last_screen, LAST_POS
     start = time.time()
-    xs, ys = [], []
-    while time.time() - start < timeout:
+    while True:
+        t0 = time.time()
         _last_screen = get_screen()
-        p = extract_coords(_last_screen)
-        if p:
-            xs.append(p[0])
-            ys.append(p[1])
-            if len(xs) >= 3:
-                break
+        if _last_screen is not None:
+            votes, total = vote_ocr(_last_screen)
         else:
-            time.sleep(0.1)
-    if not xs:
-        save_debug()
-        return None
-    return (statistics.median(xs), statistics.median(ys))
+            votes, total = {}, 0
+        pos = pick(votes)
+        if VERBOSE_OCR:
+            vs = {f"{p[0]},{p[1]}": c for p, c in votes.items()}
+            if pos:
+                print(f"    [ocr] อ่านได้ ({pos[0]},{pos[1]}) โหวต {votes[pos]}/{total} "
+                      f"ทั้งหมด {vs} ({time.time() - t0:.1f}s)")
+            else:
+                print(f"    [ocr] อ่านไม่ได้/ไม่มั่นใจ ลอง {total} แบบ ได้ {vs} "
+                      f"({time.time() - t0:.1f}s)")
+        if pos:
+            LAST_POS = pos
+            return pos
+        if time.time() - start >= timeout:
+            break
+        time.sleep(0.1)
+    save_debug()
+    return None
+
+
+def ocr_test(path=None):
+    """python utopia_walk.py ocr [ไฟล์ภาพ] : ดูว่าแต่ละวิธีอ่านได้อะไร"""
+    scr = cv2.imread(path) if path else get_screen()
+    if scr is None:
+        print("[!] ไม่มีภาพ")
+        return
+    print(f"ภาพขนาด {scr.shape[1]}x{scr.shape[0]}")
+    for idx in range(len(ROIS)):
+        roi = crop_roi(scr, idx)
+        cv2.imwrite(f"roi{idx}.png", roi)
+        print(f"--- กรอบ {idx} {ROIS[idx]} (บันทึก roi{idx}.png) ---")
+        for name, img, psm in variants(roi):
+            raw = ocr_raw(img, psm).strip().replace("\n", " | ")
+            print(f"{name:13} psm{psm:<2}: {raw!r} -> {parse(raw)}")
+    votes, total = vote_ocr(scr)
+    print("โหวตรวม:", {f"{p[0]},{p[1]}": c for p, c in votes.items()}, f"จาก {total} แบบ")
 
 
 # ------------------------------------------------------------ เดิน
@@ -139,7 +217,11 @@ def measure_step(deg):
         print(f"[cal] deg={deg} ms={ms} p1={p1} p2={p2}")
         if p1 and p2:
             v = (p2[0] - p1[0], p2[1] - p1[1])
-            if math.hypot(*v) > 2:
+            d = math.hypot(*v)
+            if d > 80:
+                print(f"[cal] ค่ากระโดดผิดปกติ ({d:.0f} หน่วย) ข้าม ลองใหม่")
+                continue
+            if d > 2:
                 k = CAL_MS / ms
                 return (v[0] * k, v[1] * k)
     return None
@@ -159,7 +241,7 @@ def calibrate():
 
 
 def plan_move(M, dx, dy, fine):
-    """คืน (องศาจอยสติ๊ก, มิลลิวินาที, เวกเตอร์สั่ง u = (หน้า, ขวา) หน่วย CAL_MS)"""
+    """คืน (องศา, มิลลิวินาที, u=(หน้า,ขวา) หน่วย CAL_MS, a, b)"""
     a, b = np.linalg.solve(M, np.array([dx, dy], dtype=float))  # หน้า, ขวา
     if DIAGONAL and not fine:
         deg = math.degrees(math.atan2(b, a)) % 360
@@ -179,7 +261,7 @@ def plan_move(M, dx, dy, fine):
     rad = math.radians(deg)
     k = ms / CAL_MS
     u = np.array([k * math.cos(rad), k * math.sin(rad)])
-    return deg, ms, u
+    return deg, ms, u, a, b
 
 
 # ------------------------------------------------------------ main
@@ -246,6 +328,7 @@ def main():
                 u = pending["u"]
                 err = obs - M @ u
                 M = M + LEARN_RATE * np.outer(err, u) / float(u @ u)
+                print(f"    [learn] ปรับโมเดล M={M.round(2).tolist()}")
                 if abs(np.linalg.det(M)) < 1e-3:
                     return fail("โมเดลการเดินเพี้ยน (ติดสิ่งกีดขวางหรืออ่านพิกัดผิดบ่อย)")
 
@@ -285,9 +368,11 @@ def main():
                 return
 
         # ---- วางแผนก้าวถัดไป
-        deg, ms, u = plan_move(M, dx, dy, fine)
+        deg, ms, u, a, b = plan_move(M, dx, dy, fine)
         pred = (pos[0] + (M @ u)[0], pos[1] + (M @ u)[1])
         pred_dist = math.hypot(TARGET_CHEST[0] - pred[0], TARGET_CHEST[1] - pred[1])
+        print(f"    [calc] ต้องไปอีก dx={dx:.0f}, dy={dy:.0f} => แก้สมการได้ "
+              f"หน้า {a:+.1f} ขวา {b:+.1f} (หน่วยก้าว {CAL_MS}ms)")
         print(f"    สั่งเดิน ทิศ {deg:.0f}° นาน {ms} ms | "
               f"คาดว่าจะไปที่ ({pred[0]:.0f},{pred[1]:.0f}) -> ห่าง {pred_dist:.1f}")
         pending = {"pos": pos, "pred": pred, "dist": dist, "u": u}
@@ -297,4 +382,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "ocr":
+        ocr_test(sys.argv[2] if len(sys.argv) > 2 else None)
+    else:
+        main()
