@@ -18,6 +18,9 @@ TURN_THRESHOLD_DEG = 22
 TURN_GAIN = 0.8
 CAMERA_PX_PER_DEG = 4.0
 
+# พิกัดปุ่ม Pick All สีเขียว
+PICK_ALL_BTN = (335, 545)
+
 
 def run_cmd(cmd):
     subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
@@ -116,19 +119,42 @@ def check_pickup_hand(screen):
     if os.path.exists(icon_path):
         tpl = cv2.imread(icon_path)
         if tpl is not None:
-            roi = screen[300:480, 950:1160]
+            # ตรวจจับขอบเขตฝั่งขวาและรอบตัวละคร
+            roi = screen[300:660, 200:1160]
             if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                 res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
                 _, val, _, loc = cv2.minMaxLoc(res)
-                if val >= 0.58:
-                    return True, 950 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
+                if val >= 0.55:
+                    return True, 200 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
 
+    # สำรอง: วัดพิกเซลความสว่างปุ่มขาว
     hand_roi = screen[350:440, 1000:1090]
     gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
     if np.sum(gray > 200) > 220:
         return True, 1045, 390, "วัดความสว่างปุ่มขาว"
 
     return False, 0, 0, ""
+
+
+def check_pick_all_dialog(screen):
+    """ตรวจจับปุ่มสีเขียว Pick All บนหน้าต่างเก็บของ"""
+    if screen is None:
+        return False, 0, 0
+
+    roi = screen[480:600, 260:410]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask_green = cv2.inRange(hsv, np.array([35, 70, 70]), np.array([85, 255, 255]))
+    green_pixels = np.sum(mask_green > 0)
+
+    if green_pixels > 400:
+        return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    text = pytesseract.image_to_string(gray, config=r"--psm 7").strip()
+    if any(k in text.lower() for k in ["pick", "all", "เก็บ"]):
+        return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
+
+    return False, 0, 0
 
 
 def detect_target_tree(screen):
@@ -273,7 +299,12 @@ def main():
     print("=" * 60)
     time.sleep(2)
 
+    round_count = 0
+
     while True:
+        round_count += 1
+        print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
+
         # 1. กวาดสายตา 360 องศา (8 มุม) โดยเทียบกับไฟล์รูปภาพต้นไม้โดยตรง
         print("\n[*] กวาดสายตา 360 องศาค้นหาลวดลายไฟล์รูปภาพต้นไม้รอบตัว...")
         candidate_found = False
@@ -291,8 +322,11 @@ def main():
                 print(f"[🔄] สแกนมุม {step + 1}/8 -> กำลังหมุนขวาต่อ...")
                 rotate_view_right(dist=180)
 
+        # เงื่อนไข: หันจอครบ 360 องศาแล้วไม่พบ ให้หยุดการทำงานทันที และบอกล้มเหลว
         if not candidate_found:
-            print("\n[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบไฟล์ต้นไม้ -> หยุดการทำงาน")
+            print("\n" + "=" * 55)
+            print("[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบไฟล์ต้นไม้ -> หยุดการทำงาน")
+            print("=" * 55)
             return
 
         # 2. ล็อกจอภาพนิ่งสนิท แล้วเปิดโหมด Digital Zoom
@@ -342,7 +376,7 @@ def main():
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px")
 
-                if cur_h >= 320 or cur_area >= 24000:
+                if cur_h >= 280 or cur_area >= 24000:
                     print(f"\n[🎯] ลำต้นแนบชิดตัวละครแล้ว! (สูง: {cur_h}px)")
                     reached_close = True
                     break
@@ -379,34 +413,58 @@ def main():
             print("=" * 55)
             return
 
-        # 5. ฟันจนเลือดหมด และเก็บของ
+        # 5. ฟันจนเลือดหมด หรือขึ้นรูปมือ -> หยุดตีทันที
         print(f"[✓] ยืนยันชื่อถูกต้อง! เริ่มต้นฟัน {tree_type_name} ต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
         hits = 0
-        while hits < 35:
+        while hits < 40:
             hits += 1
             tap(1100, 530)
-            time.sleep(0.38)
+            time.sleep(0.36)
 
-            if hits % 3 == 0:
+            if hits % 2 == 0:
                 chk_scr = get_screen()
                 hand_ready, _, _, _ = check_pickup_hand(chk_scr)
                 name_alive, _ = check_target_name_match(chk_scr)
+
+                # เลือดหมด หรือขึ้นรูปมือ ให้หยุดตีทันที
                 if hand_ready or not name_alive:
-                    print(f"[✓] ต้นไม้ล้มเรียบร้อยแล้ว (ฟันไปทั้งหมด {hits} ครั้ง)")
+                    print(f"\n[🛑] เลือดหมด/พบปุ่มรูปมือขึ้นมาแล้ว! (หยุดฟันทันทีหลังตีไป {hits} ครั้ง)")
                     break
 
-        time.sleep(0.6)
-        for _ in range(4):
-            final_scr = get_screen()
-            hand_found, hx, hy, hinfo = check_pickup_hand(final_scr)
-            if hand_found:
-                print(f"[✓] แตะปุ่มเก็บไอเทม ({hinfo}) ที่พิกัด ({hx}, {hy})...")
-                tap(hx, hy)
-                time.sleep(0.3)
-            else:
-                break
-        print("\n[✓] เสร็จสิ้นภารกิจ 1 รอบสมบูรณ์!")
-        time.sleep(1.5)
+        # 6. กดปุ่มรูปมือ -> หน้าต่างเปิด -> กดปุ่ม Pick All สีเขียว
+        time.sleep(0.4)
+        post_scr = get_screen()
+        hand_up, hx, hy, _ = check_pickup_hand(post_scr)
+
+        if hand_up:
+            print(f"[🖐️] แตะที่ปุ่มรูปมือ ({hx}, {hy})...")
+            tap(hx, hy)
+            time.sleep(0.5)
+
+        # กดเก็บของ Pick All
+        dialog_scr = get_screen()
+        pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
+
+        if pick_all_ready:
+            print(f"[📦] ปรากฏหน้าต่างไอเทม -> แตะปุ่มเขียว 'Pick All' ที่ ({px}, {py})")
+            tap(px, py)
+            time.sleep(0.3)
+            tap(px, py)
+        else:
+            print("[📦] แตะพิกัด Pick All (335, 545)...")
+            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
+            time.sleep(0.3)
+            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
+
+        print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์! ชื่อต้นไม้หายไปแล้ว")
+
+        # 7. รอ 5 วินาทีให้ต้นไม้หายสนิทก่อนเริ่มวนลูปสแกนหาต้นถัดไป
+        print("[⏳] รอนิ่ง 5 วินาทีเพื่อให้ต้นไม้และโมเดลในฉากหายสนิท...")
+        for wait_sec in range(5, 0, -1):
+            print(f"[*] พักรอ... เหลือ {wait_sec} วิ")
+            time.sleep(1.0)
+
+        print("[🚀] เริ่มต้นสแกนหาต้นต่อไปทันที...\n")
 
 
 if __name__ == "__main__":
