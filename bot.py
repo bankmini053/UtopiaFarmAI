@@ -470,6 +470,51 @@ def calculate_walk_angle(target_x):
         label = "ตรง"
     return ang % 360, f"{label} {ang:+.1f}°"
 
+def get_player_heading_angle(screen):
+    """
+    อ่านทิศทางการหันหน้าของตัวละครจากลูกศรบน Mini-map
+    คืนค่า: องศา (0-360°) หรือ None หากอ่านไม่ชัดเจน
+    """
+    if screen is None:
+        return None
+
+    # โซน Mini-map ขวาบน (Utopia: Origin)
+    map_roi = screen[20:170, 1110:1260]
+    h, w = map_roi.shape[:2]
+    center_x, center_y = w // 2, h // 2
+
+    arrow_roi = map_roi[center_y - 25:center_y + 25, center_x - 25:center_x + 25]
+    if arrow_roi.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(arrow_roi, cv2.COLOR_BGR2HSV)
+    lower_arrow = np.array([0, 0, 200])
+    upper_arrow = np.array([180, 60, 255])
+    mask = cv2.inRange(hsv, lower_arrow, upper_arrow)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    arrow_cnt = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(arrow_cnt) < 15:
+        return None
+
+    M = cv2.moments(arrow_cnt)
+    if M["m00"] != 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        pts = arrow_cnt.reshape(-1, 2)
+        dists = np.sum((pts - [cx, cy]) ** 2, axis=1)
+        tip = pts[np.argmax(dists)]
+        
+        rad = math.atan2(tip[1] - cy, tip[0] - cx)
+        deg = (math.degrees(rad) + 90) % 360
+        return round(deg, 1)
+
+    return None
+
+
 
 def main():
     print("=" * 60)
