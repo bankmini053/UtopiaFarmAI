@@ -565,7 +565,6 @@ def main():
                 for step in range(30):
             curr_scr = get_screen()
 
-            # หากขึ้นปุ่มมือระหว่างเดิน แสดงว่าประชิดเป้าหมายแล้ว
             if check_pickup_hand(curr_scr)[0]:
                 print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
@@ -586,15 +585,13 @@ def main():
                 print(f"[*] ก้าวที่ {step + 1:02d} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
                       f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px | เดิน: {direction_label}")
 
-                # หยุดเดินเมื่อประชิดโคนต้นไม้ (สูงตั้งแต่ 220px ขึ้นไป)
                 if step >= 3 and cur_h >= 220:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
                 walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
-
 
             else:
                 print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
