@@ -585,12 +585,13 @@ def main():
                 # รายงานพิกัดและการคำนวณสดทุกก้าวตลอดเวลา
                 print(f"[*] ก้าวที่ {step + 1:02d} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
                       f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px | เดิน: {direction_label}")
+ 
+# ปรับจาก 360 เป็น 220
+       if step >= 3 and cur_h >= 220:
+    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
+    reached_close = True
+    break
 
-                # ถ้าลำต้นขยายใหญ่เต็มสายตา แสดงว่าถึงโคนต้นไม้แล้ว
-                if step >= 3 and cur_h >= 360:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
-                    reached_close = True
-                    break
              
                 walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
