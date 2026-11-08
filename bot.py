@@ -87,7 +87,8 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
     # 1. ค้นหาต้นไม้ทุกต้นบนจอเพื่อเลือกต้นที่ขนาดใหญ่ที่สุด (ใกล้ตัวละครที่สุด)
     target_roi = screen[40:540, 80:1200]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
-    tree_files = ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png", "tree_rubber.png"]
+    tree_files = ["tree_name1.png", "tree_coconut.png", "tree_coconut2.png"]
+
 
     best_area = 0
     best_target_x = target_x
@@ -134,11 +135,11 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
 
     zoom_scales = [1.0, 1.4, 1.8]
     tree_file_map = {
-        "tree_coconut.png": "ต้นมะพร้าว (Coconut Tree)",
-        "tree_coconut2.png": "ต้นมะพร้าวลาย 2 (Coconut Tree)",
-        "tree_name1.png": "ต้นยางพารา (Rubber Tree)",
-        "tree_rubber.png": "ต้นยางพารา (Rubber Tree)"
-    }
+    "tree_coconut.png": "ต้นมะพร้าว (Coconut Tree)",
+    "tree_coconut2.png": "ต้นมะพร้าวลาย 2 (Coconut Tree)",
+    "tree_name1.png": "ต้นยางพารา (Rubber Tree)"
+}
+
 
     for sc in zoom_scales:
         scaled_img = cv2.resize(enhanced, (0, 0), fx=sc, fy=sc, interpolation=cv2.INTER_LINEAR)
