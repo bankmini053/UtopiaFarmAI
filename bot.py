@@ -285,6 +285,9 @@ def check_target_name_match(screen):
 
     return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
 
+JOY_CENTER_X = 250
+JOY_CENTER_Y = 530
+JOY_RADIUS = 145
 
 
 def walk_direction(deg=0, duration_ms=450):
@@ -293,6 +296,7 @@ def walk_direction(deg=0, duration_ms=450):
     ty = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(rad))
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.1)
+
 
 
 def rotate_view_right(dist=180):
