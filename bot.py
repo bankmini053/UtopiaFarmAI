@@ -520,6 +520,28 @@ def main():
             print("=" * 55)
             return
 
+        # ตรวจสอบข้อ 1: สถานะกระเป๋า
+        scr_check = get_screen()
+        bag_status = check_bag_status(scr_check)
+        if bag_status == "full":
+            print("\n[!] กระเป๋าเต็ม (ตรวจพบ กระเป๋าส้ม.png) -> หยุดทำงาน")
+            return
+        else:
+            print("[✓] สถานะกระเป๋าปกติ (กระเป๋า.png)")
+
+        # ตรวจสอบข้อ 2: สถานะขวานแถบล่าง
+        axe_ready = check_axe_status(scr_check)
+        if not axe_ready:
+            print("\n" + "=" * 60)
+            print("[!] ล้มเหลว: ตรวจพบ ขวานแดง.png (ขวานพัง/หลอดแดง) -> สั่งหยุดทำงานทันที")
+            print("=" * 60)
+            return
+        else:
+            print("[✓] ขวานพร้อมใช้งาน (ขวาน.png) -> ดำเนินการวิเคราะห์เฉดสีและเดินต่อได้")
+
+
+        
+
         # ขั้นตอนที่ 2: ล็อกเป้าหมายทันที (ไม่สั่งหมุนวนซ้ำ และไม่เซฟรูปภาพติด permission denied)
         print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
         time.sleep(0.6)
