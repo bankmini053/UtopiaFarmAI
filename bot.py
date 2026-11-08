@@ -247,4 +247,89 @@ def main():
         print(f"  - ขนาดลำต้นเริ่มต้น   : {start_area:.0f} พิกเซล (สูง {start_h}px)")
         print("=" * 50)
 
-        # 3. เดินเข้าหาต้นมะพร้าว (เช็ก
+        # 3. เดินเข้าหาต้นมะพร้าว (เช็กขนาดขยายใหญ่ขึ้น)
+        current_deg = 0
+        last_area = start_area if start_area > 0 else base_area
+        reached_tree = False
+
+        print("\n[↑] เริ่มต้นเดินเข้าหาต้นมะพร้าว...")
+        for step in range(16):
+            # ตรวจสอบว่าปุ่มรูปมือขึ้นแล้วหรือไม่
+            hand_up, hx, hy, h_info = check_pickup_hand(get_screen())
+            if hand_up:
+                print(f"\n[🎯] พบปุ่มเก็บของขึ้นมาแล้ว! ({h_info}) ที่ ({hx}, {hy})")
+                reached_tree = True
+                break
+
+            walk_direction(current_deg, duration_ms=450)
+            time.sleep(0.12)
+
+            step_scr = get_screen()
+            found_step, _, _, new_area, new_h = detect_coconut_tree(step_scr)
+
+            if found_step:
+                print(f"[*] ก้าวที่ {step + 1} | ขนาด: {new_area:.0f} (เดิม: {last_area:.0f}) | สูง: {new_h}px")
+
+                if new_area > last_area * 1.05:
+                    print("[✓] ถูกทางแล้ว! ลำต้นมะพร้าวขยายใหญ่ขึ้น")
+                    last_area = new_area
+                elif new_area < last_area * 0.85:
+                    current_deg = random.choice([330, 30, 0])
+                    print(f"[⚠️] ลำต้นเล็กลง ปรับมุมเดินเป็น: {current_deg}°")
+                else:
+                    last_area = max(last_area, new_area)
+
+                if new_area >= 9500 or new_h >= 240:
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ -> ถึงระยะประชิดแล้ว!")
+                    reached_tree = True
+                    break
+            else:
+                current_deg = random.choice([45, 315, 0])
+
+        if not reached_tree:
+            print("[!] ยังไม่ถึงระยะประชิด -> เริ่มสแกนรอบใหม่")
+            continue
+
+        # 4. ฟัน 1 ครั้งเพื่อเช็กชื่อเป้าหมาย
+        print("\n[🪓] ฟัน 1 ครั้งเพื่อตรวจสอบชื่อเป้าหมาย...")
+        tap(1100, 530)
+        time.sleep(0.7)
+
+        target_scr = get_screen()
+        name_matched, name_detail = check_target_name_match(target_scr)
+        print(f"[*] ผลตรวจชื่อเป้าหมาย: {name_detail}")
+
+        if name_matched:
+            print("[✓] ชื่อถูกต้อง! ฟันต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
+            hits = 0
+            while hits < 30:
+                hits += 1
+                tap(1100, 530)
+                time.sleep(0.38)
+
+                if hits % 3 == 0:
+                    chk_scr = get_screen()
+                    hand_ready, _, _, _ = check_pickup_hand(chk_scr)
+                    name_alive, _ = check_target_name_match(chk_scr)
+                    if hand_ready or not name_alive:
+                        print(f"[✓] ต้นไม้ล้มเรียบร้อยแล้ว (ตีไปทั้งหมด {hits} ครั้ง)")
+                        break
+
+            # 5. เก็บของด้วยปุ่ม pickup_hand.png
+            time.sleep(0.5)
+            for _ in range(4):
+                final_scr = get_screen()
+                hand_found, hx, hy, hinfo = check_pickup_hand(final_scr)
+                if hand_found:
+                    print(f"[✓] แตะปุ่มเก็บไอเทม ({hinfo}) ที่พิกัด ({hx}, {hy})...")
+                    tap(hx, hy)
+                    time.sleep(0.3)
+                else:
+                    break
+        else:
+            print(f"[!] ชื่อเป้าหมายไม่ตรง ({name_detail}) -> เปลี่ยนไปหาต้นอื่น")
+
+        time.sleep(1.5)
+
+if __name__ == "__main__":
+    main()
