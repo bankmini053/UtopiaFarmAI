@@ -483,9 +483,7 @@ def check_target_name_match(screen):
 
 def detect_target_tree(screen):
 1. อัปเดตฟังก์ชัน check_target_name_match
-​# บังคับว่าต้องตรวจพบไฟล์ Name_Rubber_tree.png หรือข้อความ OCR ต้องตรงกับคำว่ายางพาราเท่านั้น...
-
-
+​
 def walk_direction(deg=0, duration_ms=480):
     rad = math.radians(deg)
     tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
