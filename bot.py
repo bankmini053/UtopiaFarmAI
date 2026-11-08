@@ -480,9 +480,6 @@ def check_target_name_match(screen):
 
     return False, False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่ใช่ต้นยาง (ไอคอน: {val_has_blood:.2f}, OCR: '{raw_ocr}')"
 
-
-def detect_target_tree(screen):
-1. อัปเดตฟังก์ชัน check_target_name_match
 ​
 def walk_direction(deg=0, duration_ms=480):
     rad = math.radians(deg)
