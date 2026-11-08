@@ -435,14 +435,17 @@ def main():
         time.sleep(1.0)
 
         # ขั้นตอนที่ 3: เดินเข้าหา และก้มหน้าจอลงพื้นวัดระยะชิดหัว
-        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมายตามทิศทางกรอบเขียว...")
+
+        # =========================================================================
+        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมายตามแนวระนาบปกติ...")
         reached_close = False
 
         for step in range(25):
             curr_scr = get_screen()
 
+            # หากขึ้นปุ่มรูปมือระหว่างเดิน แสดงว่าประชิดเป้าหมายแล้ว
             if check_pickup_hand(curr_scr)[0]:
-                print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ชิดติดเนื้อไม้ 100%!")
+                print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
 
@@ -455,30 +458,21 @@ def main():
                     curr_scr = get_screen()
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
-                print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px")
+                print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | ความสูง={cur_h}px")
 
-                if cur_h >= 220 or step >= 5:
-                    print("[👀] เข้าใกล้ระยะโคนต้น -> กำลังก้มหน้าจอลงพื้นจนสุดเพื่อวัดระยะชิดหัว...")
-                    pitch_camera_down()
-                    
-                    td_scr = get_screen()
-                    is_snapped, dist = check_topdown_proximity(td_scr)
-                    print(f"[*] ระยะห่างโคนต้นไม้จากหัวตัวละคร: {dist} px")
+                # ถ้าลำต้นขยายใหญ่เต็มสายตา แสดงว่าถึงโคนต้นไม้แล้ว
+                if cur_h >= 260:
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
+                    reached_close = True
+                    break
 
-                    if is_snapped or dist <= 40:
-                        print("\n[🎯] ลำต้นแนบชิดติดหัวตัวละครแล้ว (ระยะตัดสมบูรณ์)!")
-                        reached_close = True
-                        break
-                    else:
-                        print("[+] เดินดันชนอัดเข้าไปอีกนิด...")
-                        walk_direction(0, duration_ms=380)
-                        time.sleep(0.1)
-                else:
-                    walk_direction(walk_deg, duration_ms=480)
-                    time.sleep(0.1)
+                walk_direction(walk_deg, duration_ms=460)
+                time.sleep(0.1)
             else:
+                # ดันเดินตรงต่อสั้นๆ หากหลุดโฟกัสชั่วคราว
                 walk_direction(0, duration_ms=350)
                 time.sleep(0.1)
+
 
         # ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อตรวจชื่อ
         print(f"\n[4] ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อเช็กชื่อต้นไม้ ({tree_type_name})...")
