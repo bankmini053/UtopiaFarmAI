@@ -16,7 +16,7 @@ ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 SCREEN_W = 1280
 SCREEN_H = 720
 HFOV_DEG = 60
-DEADZONE_PX = 30
+DEADZONE_PX = 35
 TURN_GAIN = 0.65
 CAMERA_PX_PER_DEG = 3.8
 
@@ -277,12 +277,20 @@ def check_target_name_match(screen):
     return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
 
 
-def walk_direction(deg=0, duration_ms=450):
+def walk_direction(deg=0, duration_ms=680):
     rad = math.radians(deg)
     tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
     ty = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(rad))
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.1)
+
+
+def step_backward(duration_ms=420):
+    """ถอยหลัง 1 ก้าวเมื่อหลุดโฟกัส"""
+    tx = JOY_CENTER_X
+    ty = int(JOY_CENTER_Y + JOY_RADIUS)
+    swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
+    time.sleep(0.25)
 
 
 def rotate_view_right(dist=180):
@@ -300,28 +308,40 @@ def pixel_to_angle(target_x):
     return math.degrees(math.atan(off / f))
 
 
-def turn_camera_smooth(angle_deg):
-    """ปรับมุมกล้องแบบ Proportional ไม่ให้หันกระชากหรือคลาดเคลื่อน"""
-    px = int(min(abs(angle_deg) * TURN_GAIN * CAMERA_PX_PER_DEG, 420))
-    if px < 15:
-        return
-    cx, cy = 850, 240
-    if angle_deg > 0:
-        swipe_screen(cx, cy, cx - px, cy, duration=180)
-    else:
-        swipe_screen(cx, cy, cx + min(px, 320), cy, duration=180)
-    time.sleep(0.25)
-
-
 def calculate_walk_angle(target_x):
     ang = pixel_to_angle(target_x)
-    if ang < -1.5:
-        label = "เอียงซ้าย"
-    elif ang > 1.5:
-        label = "เอียงขวา"
-    else:
-        label = "ตรงกลาง"
+    label = "เอียงซ้าย" if ang < -1.5 else ("เอียงขวา" if ang > 1.5 else "ตรงกลาง")
     return ang % 360, f"{label} {ang:+.1f}°", ang
+
+
+def align_camera_to_crosshair(target_x, target_y):
+    """
+    ข้อ 1 & 2: หมุนปรับหน้าจอทีละนิด (ซ้าย-ขวา, บน-ล่าง)
+    ดึงพิกัดลำต้นไม้เข้าสู่กรอบสี่เหลี่ยมเป้าหมายกลางจอ (640, 360) ให้ใกล้ที่สุด
+    """
+    for _ in range(4):
+        diff_x = target_x - 640
+        diff_y = target_y - 360
+
+        # อยู่ในกรอบสี่เหลี่ยมตรงกลางแล้ว (ไม่เกิน 45px)
+        if abs(diff_x) <= 45 and abs(diff_y) <= 45:
+            break
+
+        move_x = int(np.clip(diff_x * 0.42, -150, 150))
+        move_y = int(np.clip(diff_y * 0.40, -110, 110))
+
+        cx, cy = 850, 240
+        swipe_screen(cx, cy, cx - move_x, cy - move_y, duration=160)
+        time.sleep(0.25)
+
+        chk = get_screen()
+        found, _, cur_x, cur_y, _, _ = detect_target_tree(chk)
+        if found:
+            target_x, target_y = cur_x, cur_y
+        else:
+            break
+
+    return target_x, target_y
 
 
 def main():
@@ -338,7 +358,7 @@ def main():
         round_count += 1
         print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
 
-        # ขั้นตอนที่ 1: กวาดสายตา 360 องศา
+        # ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้
         print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้...")
         candidate_found = False
         target_x = 0
@@ -361,8 +381,8 @@ def main():
             print("=" * 55)
             return
 
-        # ขั้นตอนที่ 2: ล็อกเป้าหมายและตีกรอบสีเขียว
-        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่ง และคำนวณพิกัดกรอบเขียว...")
+        # ขั้นตอนที่ 2: ตีกรอบสีเขียวครอบต้นไม้ที่ใหญ่ที่สุด
+        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
         time.sleep(0.8)
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x, tree_box = optical_zoom_analysis(zoom_scr, target_x)
@@ -383,46 +403,56 @@ def main():
             rotate_view_right(dist=180)
             continue
 
-        # ขั้นตอนที่ 3: เดินเข้าหาแบบ Live Tracking (คำนวณและรายงานพิกัดตลอดเวลา)
-        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมาย (คำนวณภาพสดและแก้ทิศทางทุกก้าว)...")
+        # ขั้นตอนที่ 3: ปรับศูนย์เล็งเข้ากึ่งกลางจอ (640, 360) แล้วเดินยาว
+        print("\n[3] ขั้นตอนที่ 3: ระบบปรับศูนย์เล็งเข้ากึ่งกลางจอ (640, 360) แล้วเดินยาว...")
         reached_close = False
 
-        for step in range(30):
+        for step in range(25):
             curr_scr = get_screen()
 
             # ตรวจสอบปุ่มรูปมือก่อนทุกครั้ง
             if check_pickup_hand(curr_scr)[0]:
-                print("\n[🎯] ตรวจพบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
+                print("\n[🎯] ตรวจพบปุ่มรูปมือขึ้นมาแล้ว -> ถึงระยะเก็บเกี่ยวเรียบร้อย!")
                 reached_close = True
                 break
 
+            # ข้อ 1: หยุดเพื่อวิเคราะห์พิกัดตำแหน่งของต้นไม้ในจอ
             found_step, src, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                walk_deg, direction_label, raw_ang = calculate_walk_angle(cur_x)
-                offset_from_center = cur_x - (SCREEN_W // 2)
+                offset_x = cur_x - 640
+                offset_y = cur_y - 360
 
-                # รายงานพิกัดและการคำนวณภาพสดตลอดเวลา
-                print(f"[📍 LIVE RADAR] ก้าวที่ {step + 1:02d} | พิกัด: ({cur_x:4d}, {cur_y:3d}) | "
-                      f"สูง: {cur_h:3d}px | เบี่ยง: {offset_from_center:+4d}px | ปรับทิศ: {direction_label}")
+                # ข้อ 4: ถ้าหลุดกึ่งกลางจอมากเกินไป (> 260px) ให้ถอยหลัง 1 ก้าวแล้วเริ่มตั้งลำใหม่
+                if abs(offset_x) > 260:
+                    print(f"[⚠️] เป้าหมายหลุดกึ่งกลางจอมากเกินไป (เบี่ยง {offset_x:+d}px) -> ถอยหลัง 1 ก้าวเพื่อตั้งลำใหม่...")
+                    step_backward(duration_ms=420)
+                    time.sleep(0.3)
+                    continue
 
-                # ปรับมุมมองกล้องให้อยู่ตรงกลางจอแบบละมุนตาหากเบี่ยงเบน
-                if abs(raw_ang) > 12:
-                    turn_camera_smooth(raw_ang)
+                # ข้อ 2: หมุนปรับหน้าจอให้พิกัดต้นไม้อยู่ใกล้ (640, 360) มากที่สุด
+                if abs(offset_x) > 50 or abs(offset_y) > 50:
+                    cur_x, cur_y = align_camera_to_crosshair(cur_x, cur_y)
                     curr_scr = get_screen()
+                    _, _, cur_x, cur_y, _, cur_h = detect_target_tree(curr_scr)
 
-                # บังคับเดินอย่างน้อย 4 ก้าว และลำต้นขยายใหญ่เต็มหน้าจอจริง
+                walk_deg, direction_label, _ = calculate_walk_angle(cur_x)
+                print(f"[📍 TARGET LOCKED] ก้าวที่ {step + 1:02d} | พิกัด: ({cur_x:4d}, {cur_y:3d}) | "
+                      f"สูง: {cur_h:3d}px | เดิน: {direction_label}")
+
+                # เงื่อนไขระยะประชิดเนื้อไม้ (เดินอย่างน้อย 4 ก้าว และลำต้นขยายใหญ่เต็มจอ)
                 if step >= 4 and cur_h >= 400:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
-                walk_direction(walk_deg, duration_ms=480)
-                time.sleep(0.08)
+                # ข้อ 3: เมื่อเล็งตรงกึ่งกลางจอแล้ว คำนวณการเดินก้าวตรงไปข้างหน้าแบบยาว ๆ (680ms)
+                walk_direction(walk_deg, duration_ms=680)
+                time.sleep(0.12)
             else:
-                print(f"[⚠️ LIVE RADAR] ก้าวที่ {step + 1:02d} | หลุดมุมกล้องชั่วคราว -> ดันเดินตรงต่อ")
-                walk_direction(0, duration_ms=380)
-                time.sleep(0.08)
+                print(f"[⚠️] ไม่พบเป้าหมายในระยะมองเห็น -> ถอยหลัง 1 ก้าวเพื่อค้นหาใหม่...")
+                step_backward(duration_ms=380)
+                time.sleep(0.2)
 
         # ขั้นตอนที่ 4: ตี 1 ครั้งเพื่อตรวจสอบชื่อ
         print(f"\n[4] ขั้นตอนที่ 4: กดตี 1 ครั้งเพื่อเช็กชื่อเป้าหมาย ({tree_type_name})...")
