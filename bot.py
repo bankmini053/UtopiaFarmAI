@@ -203,8 +203,6 @@ def check_tree_cut_finished(screen):
     return False, 0, 0
 
 
-
-
 def check_pickup_hand(screen):
     """ตรวจจับปุ่มรูปมือ pickup_hand.png ในพิกัดจอ"""
     if screen is None:
@@ -243,7 +241,6 @@ def check_pick_all_dialog(screen):
         return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
 
     return False, 0, 0
-
 
 
 def check_bag_status(screen):
@@ -320,14 +317,13 @@ def detect_target_tree(screen):
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
-        # เปลี่ยนชุดไฟล์ต้นไม้เป็น 4 ช่วงเวลา เช้า-เย็น
+    # เปลี่ยนชุดไฟล์ต้นไม้เป็น 4 ช่วงเวลา เช้า-เย็น
     tree_files = [
         "Rubber_tree.png",
         "Rubber_tree2.png",
         "Rubber_tree3.png",
         "Rubber_tree4.png"
     ]
-
 
     best_match_val = -1
     best_x = 0
@@ -430,7 +426,6 @@ def check_target_name_match(screen):
         return True, f"ยืนยันจากไอคอน: {icon_detail}"
 
     return False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่มีหลอดเลือด (OCR: '{text}')"
-
 
 
 def walk_direction(deg=0, duration_ms=480):
@@ -539,9 +534,6 @@ def main():
         else:
             print("[✓] ขวานพร้อมใช้งาน (ขวาน.png) -> ดำเนินการวิเคราะห์เฉดสีและเดินต่อได้")
 
-
-        
-
         # ขั้นตอนที่ 2: ล็อกเป้าหมายทันที (ไม่สั่งหมุนวนซ้ำ และไม่เซฟรูปภาพติด permission denied)
         print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
         time.sleep(0.6)
@@ -560,9 +552,8 @@ def main():
         # ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ (คำนวณสดตลอดเวลา ไม่ก้มหัวลงพื้น)
         print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมายตามแนวระนาบปกติ (คำนวณสดตลอดเวลา)...")
         reached_close = False
-        
+
         for step in range(30):
-                for step in range(30):
             curr_scr = get_screen()
 
             if check_pickup_hand(curr_scr)[0]:
@@ -571,8 +562,8 @@ def main():
                 break
 
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-                    
-           if found_step:
+
+            if found_step:
                 ang = pixel_to_angle(cur_x)
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
@@ -615,8 +606,7 @@ def main():
                     print("=" * 60)
                     return
 
-
-        #         # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
+        # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
         print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
         walk_direction(0, duration_ms=280)  # ดันตัวเข้าหาต้นไม้กันตีลม
         time.sleep(0.2)
@@ -661,7 +651,6 @@ def main():
                     print(f"\n[🖐️] ตัดเสร็จสมบูรณ์! ตรวจพบ No_Name หรือ มือ.png หลังตีไป {hits} ครั้ง")
                     break
 
-
         if not hand_detected:
             final_chk = get_screen()
             is_hand, hand_x, hand_y, hand_src = check_pickup_hand(final_chk)
@@ -675,7 +664,7 @@ def main():
             print("=" * 60)
             return
 
-                    # ถ้าหาพิกัดมือไม่เจอตรง ๆ ให้แตะพิกัดกึ่งกลางจอโซนเก็บของแทน
+        # ถ้าหาพิกัดมือไม่เจอตรง ๆ ให้แตะพิกัดกึ่งกลางจอโซนเก็บของแทน
         if hx == 0 and hy == 0:
             hx, hy = 760, 420
 
@@ -684,7 +673,6 @@ def main():
         time.sleep(0.3)
         tap(hx, hy)
         time.sleep(1.2)
-
 
         # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
         print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ปุ่มสีเขียว / คำว่า 'เก็บ')...")
@@ -701,7 +689,6 @@ def main():
         tap(px, py)
         time.sleep(0.25)
         tap(px, py)
-
 
         print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์!")
 
