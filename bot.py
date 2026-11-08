@@ -11,14 +11,26 @@ ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
+# --- การเล็งทิศ (ค่าที่ต้องจูนตามเกมจริง) ---
+SCREEN_W = 1280
+HFOV_DEG = 60              # มุมมองแนวนอนของกล้อง เริ่มที่ 60 แล้วลองปรับ
+DEADZONE_PX = 40           # ห่างกลางจอไม่เกินเท่านี้ถือว่า "ตรงหน้า"
+TURN_THRESHOLD_DEG = 25    # เบี่ยงเกินนี้ให้หมุนกล้องเข้าหาก่อนเดิน
+TURN_GAIN = 0.8            # หมุนกล้อง 80% ของมุม กันหมุนเลย
+CAMERA_PX_PER_DEG = 4.0    # ปัดจอกี่พิกเซล = กล้องหมุน 1° (180px ≈ 45° ตามการกวาด 8 มุม)
+
+
 def run_cmd(cmd):
     subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
+
 
 def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
+
 def swipe_screen(x1, y1, x2, y2, duration=240):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
+
 
 def get_screen():
     run_cmd(f"screencap -p {TMP_PATH}")
@@ -30,6 +42,7 @@ def get_screen():
                 img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
             return img
     return None
+
 
 def match_icon(screen, icon_filename, threshold=0.68, roi=None):
     if screen is None:
@@ -65,6 +78,7 @@ def match_icon(screen, icon_filename, threshold=0.68, roi=None):
 
     return False, 0, 0, 0, 0, max_val
 
+
 def check_pickup_hand(screen):
     """ตรวจจับปุ่ม pickup_hand.png สำหรับเก็บของ"""
     found, cx, cy, _, _, val = match_icon(screen, "pickup_hand.png", threshold=0.65, roi=(300, 480, 950, 1160))
@@ -77,6 +91,7 @@ def check_pickup_hand(screen):
         return True, 1045, 390, "วัดความสว่างปุ่มขาว"
 
     return False, 0, 0, ""
+
 
 def detect_coconut_tree(screen):
     """ตรวจหาต้นมะพร้าว (tree_coconut.png, tree_coconut2.png หรือ HSV เปลือกไม้)"""
@@ -111,6 +126,7 @@ def detect_coconut_tree(screen):
 
     return False, "ไม่พบ", 0, 0, 0
 
+
 def check_target_name_match(screen):
     """ตรวจสอบชื่อเป้าหมายหรือแถบเลือดหลังฟัน"""
     if screen is None:
@@ -143,9 +159,11 @@ def check_target_name_match(screen):
 
     return False, text if text else "ไม่มีชื่อ"
 
+
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
-JOY_RADIUS   = 145
+JOY_RADIUS = 145
+
 
 def walk_direction(deg=0, duration_ms=400):
     rad = math.radians(deg)
@@ -154,25 +172,53 @@ def walk_direction(deg=0, duration_ms=400):
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.1)
 
+
 def rotate_view_right(dist=180):
     cx, cy = 850, 240
     swipe_screen(cx, cy, cx - dist, cy, duration=240)
     time.sleep(0.4)
 
+
+def pixel_to_angle(target_x):
+    """
+    แปลงตำแหน่ง X ของเป้าหมายในภาพ เป็นมุมเบี่ยงจริงจากทิศที่กล้องหันอยู่
+    คืนค่าองศามีเครื่องหมาย: ลบ = เป้าอยู่ซ้าย, บวก = เป้าอยู่ขวา, 0 = ตรงหน้า
+    """
+    cx = SCREEN_W / 2
+    off = target_x - cx
+    if abs(off) <= DEADZONE_PX:
+        return 0.0
+    f = cx / math.tan(math.radians(HFOV_DEG / 2))   # ความยาวโฟกัส (พิกเซล)
+    return math.degrees(math.atan(off / f))
+
+
+def turn_camera(angle_deg):
+    """หมุนกล้องตามมุมที่ให้ (บวก = หมุนขวา, ลบ = หมุนซ้าย) ด้วยการปัดจอ"""
+    px = int(min(abs(angle_deg) * TURN_GAIN * CAMERA_PX_PER_DEG, 600))
+    if px < 10:
+        return
+    cx, cy = 850, 240
+    if angle_deg > 0:
+        swipe_screen(cx, cy, cx - px, cy, duration=240)           # ปัดซ้าย = กล้องหมุนขวา
+    else:
+        swipe_screen(cx, cy, cx + min(px, 380), cy, duration=240)  # ปัดขวา = กล้องหมุนซ้าย
+    time.sleep(0.4)
+
+
 def calculate_walk_angle(target_x):
     """
-    คำนวณทิศทางการเดินเอียงซ้าย/ขวา/ตรง ตามตำแหน่งภาพ:
-    กึ่งกลางจออยู่ที่ X=640
-    - target_x < 580: อยู่ซ้าย -> เดินเฉียงซ้าย 330°
-    - target_x > 700: อยู่ขวา -> เดินเฉียงขวา 30°
-    - 580 <= target_x <= 700: อยู่ตรงหน้า -> เดินตรง 0°
+    คำนวณทิศเดินแบบต่อเนื่องตามมุมจริงของเป้าหมายในภาพ (แทนแบบแบ่ง 3 ช่องเดิม)
+    คืนค่า (องศาจอยสติ๊ก 0-360, ข้อความบอกทิศ) เหมือนเดิม ใช้แทนกันได้เลย
     """
-    if target_x < 580:
-        return 330, "เอียงซ้าย"
-    elif target_x > 700:
-        return 30, "เอียงขวา"
+    ang = pixel_to_angle(target_x)
+    if ang < -1:
+        label = "เอียงซ้าย"
+    elif ang > 1:
+        label = "เอียงขวา"
     else:
-        return 0, "ตรง"
+        label = "ตรง"
+    return ang % 360, f"{label} {ang:+.1f}°"
+
 
 def main():
     print("=" * 60)
@@ -211,13 +257,13 @@ def main():
     print("[🛑] หยุดนิ่ง 3 วินาทีเพื่อเตรียมเดินเข้าหา...")
     time.sleep(3.0)
 
-    # 3. เดินเข้าหาแบบ Real-time: ปรับองศา ตรง / เอียงซ้าย / เอียงขวา และเดินจนชิดตัวละครที่สุด
-    print("\n[↑] เริ่มเดินเข้าหาเป้าหมาย (ปรับทิศทาง ตรง/เอียงซ้าย/เอียงขวา อัตโนมัติ)...")
+    # 3. เดินเข้าหาแบบ Real-time: เล็งทิศตามมุมจริง เบี่ยงมากให้หมุนกล้องก่อน แล้วเดินจนชิดตัวละครที่สุด
+    print("\n[↑] เริ่มเดินเข้าหาเป้าหมาย (เล็งทิศต่อเนื่อง + หมุนกล้องเมื่อเบี่ยงมาก)...")
     reached_tree = False
 
     for step in range(16):
         curr_scr = get_screen()
-        
+
         # ถ้าขึ้นปุ่มมือแสดงว่าชิดติดตัวละครแล้ว
         if check_pickup_hand(curr_scr)[0]:
             print(f"\n[🎯] ถึงระยะประชิดตัวละครแล้ว (พบปุ่มเก็บของ)!")
@@ -226,8 +272,19 @@ def main():
 
         found_step, _, cur_x, cur_area, cur_h = detect_coconut_tree(curr_scr)
         if found_step:
+            # ถ้าเป้าเบี่ยงจากกลางจอมาก ให้หมุนกล้องเข้าหาก่อน แล้วตรวจเป้าใหม่
+            ang = pixel_to_angle(cur_x)
+            if abs(ang) > TURN_THRESHOLD_DEG:
+                print(f"[*] ก้าวที่ {step + 1} | เป้าเบี่ยง {ang:+.1f}° (X={cur_x}) -> หมุนกล้องเข้าหา")
+                turn_camera(ang)
+                curr_scr = get_screen()
+                found_step, _, cur_x, cur_area, cur_h = detect_coconut_tree(curr_scr)
+                if not found_step:
+                    print("[?] หมุนกล้องแล้วเป้าหลุดเฟรม -> รอบถัดไป")
+                    continue
+
             walk_deg, direction_label = calculate_walk_angle(cur_x)
-            print(f"[*] ก้าวที่ {step + 1} | เดินทิศ: {direction_label} ({walk_deg}°) | พิกัดวัตถุ X={cur_x} | สูง={cur_h}px")
+            print(f"[*] ก้าวที่ {step + 1} | เดินทิศ: {direction_label} ({walk_deg:.0f}°) | พิกัดวัตถุ X={cur_x} | สูง={cur_h}px")
 
             # ตรวจสอบว่าชิดตัวละครที่สุดแล้วหรือยัง (ความสูง >= 340px หรือพื้นที่ >= 11000px)
             if cur_h >= 340 or cur_area >= 11000:
@@ -292,6 +349,7 @@ def main():
         print("\n[✓] เสร็จสิ้นภารกิจ 1 รอบสมบูรณ์!")
     else:
         print("\n[!] ล้มเหลว: เดินเข้าไปตีแล้วไม่พบชื่อเป้าหมาย")
+
 
 if __name__ == "__main__":
     main()
