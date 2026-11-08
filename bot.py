@@ -600,35 +600,25 @@ def main():
                     print("=" * 60)
                     return
 
-                # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
+         # ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
         print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
-        walk_direction(0, duration_ms=300)  # ดันตัวเข้าหาต้นไม้
+        walk_direction(0, duration_ms=280)
         time.sleep(0.15)
-        tap(1100, 530)  # แตะปุ่มตี
-        time.sleep(1.0)  # รอแอนิเมชันป้ายชื่อและหลอดเลือดขึ้นจอ
+        tap(1100, 530)
+        time.sleep(1.0)
 
         target_scr = get_screen()
         is_target_ready, is_tree_dead, result_log = check_target_name_match(target_scr)
         print(f"[*] ผลการสแกน: {result_log}")
 
-        # ถ้าตรงกับ No_Name_Rubber_tree.png = ต้นไม้ล้มหรือเสร็จแล้ว
-        if is_tree_dead:
-            print("[✓] พบ No_Name_Rubber_tree -> ต้นไม้ล้มสมบูรณ์ ข้ามไปตรวจปุ่มมือทันที")
-        elif not is_target_ready:
-            if not retry_mode:
-                print("\n[⚠️] เคาะตีแล้วไม่ตรงทั้งสองไฟล์ (อาจตีไม่โดน) -> หมุนขยับมุมเคาะซ้ำ 1 ครั้ง...")
-                retry_mode = True
-                rotate_view_right(dist=140)
-                continue
-            else:
-                print("\n[!] ล้มเหลว: ลองเคาะซ้ำแล้วยังไม่พบป้ายชื่อต้นไม้ -> สั่งหยุดทำงาน")
-                return
+        # ถ้าไม่ใช่เป้าหมาย (เช่น เจอ Fern Tree หรือหิน) ให้กลับไปเริ่มขั้นตอนที่ 1 หมุน 360 องศาหาต้นใหม่ทันที
+        if not is_target_ready and not is_tree_dead:
+            print("\n[🔄] ชื่อไม่ตรงกับ Name_Rubber_tree.png -> ย้อนกลับไปขั้นตอนที่ 1 เพื่อกวาดหา 360 องศาใหม่...")
+            rotate_view_right(dist=220)
+            continue
 
-        retry_mode = False
-
-
-        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนเจอปุ่มรูปมือ -> กดปุ่มมือ 2 ครั้ง
-        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! เริ่มต้นฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
+        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนต้นไม้ล้ม
+        print(f"\n[5] ขั้นตอนที่ 5: ยืนยันต้นยางพาราถูกต้อง! เริ่มต้นฟันต่อเนื่อง...")
         hits = 0
         hand_detected = False
         hx, hy = 0, 0
@@ -637,37 +627,37 @@ def main():
             hits += 1
             tap(1100, 530)
             time.sleep(0.35)
-            
+
             if hits % 2 == 0:
                 chk_scr = get_screen()
-                finished, hx, hy = check_tree_cut_finished(chk_scr)
+                finished, fx, fy = check_tree_cut_finished(chk_scr)
                 if finished:
                     hand_detected = True
-                    print(f"\n[🖐️] ตัดเสร็จสมบูรณ์! ตรวจพบ No_Name หรือ มือ.png หลังตีไป {hits} ครั้ง")
+                    hx, hy = fx, fy
+                    print(f"\n[🖐️] ฟันต้นไม้ล้มแล้ว! (ตีไป {hits} ครั้ง)")
                     break
 
-        if not hand_detected:
-            final_chk = get_screen()
-            is_hand, hand_x, hand_y, hand_src = check_pickup_hand(final_chk)
-            if is_hand:
-                hand_detected = True
-                hx, hy = hand_x, hand_y
+        # 1. หลอดเลือดหมด/ฟันเสร็จ: ให้หยุดนิ่ง 2 วินาที
+        print("[⏳] ฟันเสร็จสมบูรณ์ -> หยุดนิ่ง 2 วินาที...")
+        time.sleep(2.0)
 
-        if not hand_detected:
-            print("\n" + "=" * 60)
-            print("[!] ล้มเหลว: ฟันจนครบกำหนดแล้วแต่ไม่พบปุ่มรูปมือ (pickup_hand.png) -> หยุดทำงาน")
-            print("=" * 60)
-            return
+        # 2. ตรวจสอบปุ่มรูปมือ หรือใช้พิกัดสำรอง (670, 430)
+        final_chk = get_screen()
+        is_hand, hand_x, hand_y, _ = check_pickup_hand(final_chk)
+        if is_hand:
+            hx, hy = hand_x, hand_y
 
-        # ถ้าหาพิกัดมือไม่เจอตรง ๆ ให้แตะพิกัดกึ่งกลางจอโซนเก็บของแทน
+        # หากระบบมองไม่เห็นปุ่มมือ ให้ใช้พิกัดสำรองในรูปภาพ (670, 430)
         if hx == 0 and hy == 0:
-            hx, hy = 760, 420
+            hx, hy = 670, 430
+            print(f"[*] ตรวจไม่พบไอคอนรูปมือ -> ใช้พิกัดสำรอง ({hx}, {hy}) ทันที")
 
         print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
         tap(hx, hy)
         time.sleep(0.3)
         tap(hx, hy)
         time.sleep(1.2)
+
 
         # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
         print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ปุ่มสีเขียว / คำว่า 'เก็บ')...")
