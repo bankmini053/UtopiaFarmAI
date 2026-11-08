@@ -332,38 +332,66 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
-    """ตรวจสอบชื่อเป้าหมาย: ปรับให้อ่านทั้งไทย/อังกฤษ และตัด imwrite ทิ้งไม่ให้ติด Permission Denied"""
+    """
+    ข้อ 4 (ฉบับสมบูรณ์): 
+    1. เทียบไฟล์ Name_Rubber_tree.png
+    2. ตรวจสอบแถบสีเลือดสีแดง (HSV)
+    3. ตรวจสอบ OCR ตัวหนังสือภาษาไทย/อังกฤษ (กรองตัดเฉพาะฟอนต์สีขาว)
+    """
     if screen is None:
-        return False, "ไม่พบชื่อ"
+        return False, "ไม่พบภาพ"
 
-    target_names = ["tree_rubber.png", "name_coconut.png"]
+    # โซนป้ายชื่อเป้าหมายแถบขวาบน
     roi = screen[120:340, 780:1260]
 
-    for r_name in target_names:
-        icon_path = os.path.join(ICONS_DIR, r_name)
-        if os.path.exists(icon_path):
-            tpl = cv2.imread(icon_path)
-            if tpl is not None:
-                if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
-                    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
-                    _, val, _, _ = cv2.minMaxLoc(res)
-                    if val >= 0.40:
-                        return True, f"ป้ายชื่อตรง {r_name} ({val:.2f})"
+    matched_by_icon = False
+    icon_detail = ""
 
-    # OCR ในโซนชื่อเป้าหมาย
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 175, 255, cv2.THRESH_BINARY)
-    text = pytesseract.image_to_string(thresh, lang="eng+tha", config=r"--psm 7").strip()
+    # 1. เทียบภาพเทมเพลต Name_Rubber_tree.png
+    name_icon = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
+    if os.path.exists(name_icon):
+        tpl = cv2.imread(name_icon)
+        if tpl is not None and roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
+            res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if val >= 0.42:
+                matched_by_icon = True
+                icon_detail = f"ตรงไอคอน Name_Rubber_tree ({val:.2f})"
 
+    # แปลงภาพเป็น HSV สำหรับวิเคราะห์สีเลือดและตัวหนังสือ
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    # 2. ตรวจสอบเฉดสีแดงของแถบหลอดเลือด (Hue: 0-10 และ 160-180)
+    mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
+    mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
+    has_blood_bar = (np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0)) > 50
+
+    # 3. ระบบ OCR: กรองเฉพาะเนื้อตัวหนังสือสีขาวสว่าง (ตัดฉากหลังและกรอบเงาออก)
+    lower_white = np.array([0, 0, 190])
+    upper_white = np.array([180, 45, 255])
+    mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
+
+    # ส่งให้อ่าน OCR เฉพาะมาสก์ตัวอักษรสีขาว
+    text = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip()
+
+    # ดักจับว่าถ้าเป็นหินหรือแร่ ให้หยุดทันที
     if any(k in text.lower() for k in ["stone", "mine", "หิน", "iron", "ore", "copper"]):
-        return False, f"พบก้อนหิน ({text}) ไม่ใช่ต้นไม้"
+        return False, f"พบก้อนหินหรือแร่ ({text}) ไม่ใช่ต้นไม้"
 
-    tree_keywords = ["rubber", "coconut", "palm", "tree", "wood", "ยาง", "พารา", "มะพร้าว", "ต้นไม้", "ไม้"]
-    if any(k in text.lower() for k in tree_keywords):
-        return True, f"OCR พบชื่อต้นไม้: '{text}'"
+    # คำค้นหาที่ตรงกับต้นยางพารา
+    rubber_keywords = ["rubber", "tree", "ยาง", "พารา", "ต้นไม้"]
+    matched_by_ocr = any(k in text.lower() for k in rubber_keywords)
 
-    # ถ้าไม่ใช่หิน ให้ถือว่าถูกต้องเพื่อตัดปัญหาหมุนวนลูป
-    return True, f"ยืนยันต้นไม้เป้าหมาย (ตรวจชื่อ: '{text}')"
+    # เงื่อนไขการตัดสิน: ผ่านเมื่อตรงไอคอน + มีเลือด หรือ OCR เจอชื่อยางพารา
+    if matched_by_icon and has_blood_bar:
+        return True, f"ยืนยันสมบูรณ์: {icon_detail} + พบหลอดเลือด (OCR: '{text}')"
+    elif matched_by_ocr:
+        return True, f"ยืนยันจาก OCR ตัวหนังสือ: '{text}' (พบเลือด={has_blood_bar})"
+    elif matched_by_icon:
+        return True, f"ยืนยันจากไอคอน: {icon_detail}"
+
+    return False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่มีหลอดเลือด (OCR: '{text}')"
+
 
 
 def walk_direction(deg=0, duration_ms=480):
