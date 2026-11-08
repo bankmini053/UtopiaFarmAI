@@ -1,11 +1,16 @@
 import os
+import re
 import time
+import math
+import random
 import subprocess
 import cv2
 import numpy as np
+import pytesseract
 
 ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
+ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
 def run_cmd(cmd):
     subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
@@ -27,115 +32,138 @@ def get_screen():
             return img
     return None
 
-def rotate_view_right(dist=180):
-    """กวาดสายตาไปทางขวาในโซนว่าง (X: 850, Y: 240)"""
-    cx, cy = 850, 240
-    swipe_screen(cx, cy, cx - dist, cy, duration=260)
-    time.sleep(0.4)
+def extract_coords(screen):
+    """อ่านพิกัดตำแหน่งตัวละครจากมุมซ้ายบน"""
+    if screen is None:
+        return None
+    roi = screen[180:300, 40:270]
+    if roi.size == 0:
+        return None
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    for th in [175, 195, 215]:
+        _, thresh = cv2.threshold(resized, th, 255, cv2.THRESH_BINARY)
+        matches = re.findall(r"\d{5}", pytesseract.image_to_string(thresh, config=r"--psm 6 -c tessedit_char_whitelist=0123456789,."))
+        if len(matches) >= 2:
+            try:
+                x, y = int(matches[0]), int(matches[1])
+                return (x, y)
+            except:
+                pass
+    return None
 
-JOY_CENTER_X, JOY_CENTER_Y, JOY_RADIUS = 250, 530, 145
+def match_icon(screen, icon_filename, threshold=0.72, roi=None):
+    """ค้นหาไอคอนจากโฟลเดอร์ icons/"""
+    if screen is None:
+        return False, 0, 0, 0.0
 
-def walk_forward(duration_ms=500):
-    """ดันจอยตรงไปข้างหน้า (0 องศา) มุ่งเข้าหาต้นไม้"""
-    swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, JOY_CENTER_X, JOY_CENTER_Y - JOY_RADIUS, duration=duration_ms)
+    icon_path = os.path.join(ICONS_DIR, icon_filename)
+    if not os.path.exists(icon_path):
+        return False, 0, 0, 0.0
+
+    template = cv2.imread(icon_path)
+    if template is None:
+        return False, 0, 0, 0.0
+
+    target_img = screen
+    offset_x, offset_y = 0, 0
+    if roi is not None:
+        y1, y2, x1, x2 = roi
+        target_img = screen[y1:y2, x1:x2]
+        offset_x, offset_y = x1, y1
+
+    th, tw = template.shape[:2]
+    sh, sw = target_img.shape[:2]
+    if th > sh or tw > sw:
+        return False, 0, 0, 0.0
+
+    res = cv2.matchTemplate(target_img, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+    if max_val >= threshold:
+        center_x = offset_x + max_loc[0] + (tw // 2)
+        center_y = offset_y + max_loc[1] + (th // 2)
+        return True, center_x, center_y, max_val
+
+    return False, 0, 0, max_val
+
+def check_hand_icon(screen):
+    """ตรวจจับปุ่มรูปมือจากไอคอนและค่าแสง"""
+    if os.path.exists(ICONS_DIR):
+        for name in os.listdir(ICONS_DIR):
+            if "hand" in name.lower():
+                found, x, y, conf = match_icon(screen, name, threshold=0.70, roi=(320, 460, 960, 1140))
+                if found:
+                    return True, x, y, f"ไอคอน {name} ({conf:.2f})"
+
+    # ระบบสำรองวัดพิกเซลสีขาวเหนือปุ่มดาบ
+    hand_roi = screen[350:440, 1000:1090]
+    gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
+    if np.sum(gray > 200) > 220:
+        return True, 1045, 390, "ตรวจจับปุ่มขาว"
+
+    return False, 0, 0, ""
+
+def analyze_target(screen):
+    """
+    วิเคราะห์วัตถุในจอ:
+    - ตรวจหาไอคอนใน icons/
+    - หรือตรวจหากล่องสมบัติ / ต้นไม้จากเฉดสีและขนาด
+    คืนค่า: (found, target_name, center_x, area, height)
+    """
+    if screen is None:
+        return False, "", 0, 0, 0
+
+    # 1. เช็กไอคอนในโฟลเดอร์ก่อน
+    if os.path.exists(ICONS_DIR):
+        for fname in os.listdir(ICONS_DIR):
+            if not "hand" in fname.lower() and fname.endswith((".png", ".jpg")):
+                found, ix, iy, conf = match_icon(screen, fname, threshold=0.68, roi=(60, 520, 100, 1180))
+                if found:
+                    return True, f"ไอคอน {fname}", ix, 5000, 150
+
+    # 2. ตรวจหากล่องสมบัติ (สีส้ม/น้ำตาลทอง)
+    roi = screen[60:550, 100:1180]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask_chest = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([5, 60, 60]), np.array([25, 255, 255])),
+        cv2.inRange(hsv, np.array([4, 20, 20]), np.array([28, 180, 140]))
+    )
+    clean_chest = cv2.morphologyEx(mask_chest, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours_c, _ = cv2.findContours(clean_chest, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours_c:
+        a = cv2.contourArea(cnt)
+        if a > 750:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if 0.5 <= float(cw:=w) / h <= 2.2:
+                return True, "กล่องสมบัติ (Treasure Chest)", x + 100 + (w // 2), a, h
+
+    # 3. ตรวจหาต้นไม้ (สีเนื้อไม้และใบ)
+    mask_tree = cv2.bitwise_or(
+        cv2.inRange(hsv, np.array([8, 30, 30]), np.array([28, 220, 180])),
+        cv2.inRange(hsv, np.array([32, 60, 40]), np.array([75, 255, 200]))
+    )
+    clean_tree = cv2.morphologyEx(mask_tree, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    contours_t, _ = cv2.findContours(clean_tree, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contours_t:
+        a = cv2.contourArea(cnt)
+        if a > 900:
+            x, y, w, h = cv2.boundingRect(cnt)
+            if h >= 75:
+                return True, "ต้นไม้ (Tree)", x + 100 + (w // 2), a, h
+
+    return False, "", 0, 0, 0
+
+JOY_CENTER_X = 250
+JOY_CENTER_Y = 530
+JOY_RADIUS   = 145
+
+def walk_direction(deg=0, duration_ms=450):
+    """ดันจอยสติ๊กตามองศา (0=หน้า, 90=ขวา, 180=หลัง, 270=ซ้าย หรือเฉียง)"""
+    rad = math.radians(deg)
+    tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
+    ty = int(JOY_CENTER_Y - JOY_RADIUS * math.cos(rad))
+    swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.15)
 
-def detect_tree(screen):
-    """
-    กรองเฉดสีต้นไม้ (เฉดสีน้ำตาลลำต้นไม้ หรือทรงพุ่มไม้)
-    HSV Range สำหรับเนื้อไม้สีน้ำตาล: H=10-25, S=50-200, V=40-160
-    """
-    if screen is None:
-        return False, 0, 0
-    
-    # สนใจเฉพาะพื้นที่ครึ่งจอบนถึงกลางจอ ไม่รวมปุ่มควบคุม
-    roi = screen[80:500, 150:1130]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    
-    # มาสก์สีน้ำตาลลำต้นไม้
-    lower_brown = np.array([10, 50, 40])
-    upper_brown = np.array([25, 200, 160])
-    mask = cv2.inRange(hsv, lower_brown, upper_brown)
-    
-    clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    best_x, max_area = 0, 0
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 1200:  # กรองเฉพาะวัตถุขนาดใหญ่พอเป็นต้นไม้
-            x, y, w, h = cv2.boundingRect(cnt)
-            # ลำต้นไม้จะมีลักษณะเป็นทรงแนวตั้ง (h > w หรืออัตราส่วนแนวตั้ง)
-            if h > w * 0.8 and area > max_area:
-                max_area = area
-                best_x = x + 150 + (w // 2)
-                
-    return (True, best_x, max_area) if max_area > 0 else (False, 0, 0)
-
-def check_interact_or_drop(screen):
-    """ตรวจจับปุ่มรูปมือเก็บของ หรือไอเทมดรอปบนพื้น (X: 1000-1090, Y: 350-440)"""
-    if screen is None:
-        return False
-    roi = screen[350:440, 1000:1090]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    return np.sum(gray > 200) > 220
-
-def main():
-    print("=" * 60)
-    print("[*] UtopiaFarmAI: กวาดหาต้นไม้ 360° -> เจอลำต้น -> เดินเข้าฟัน")
-    print("=" * 60)
-    time.sleep(2)
-
-    while True:
-        tree_found = False
-        target_x = 0
-
-        # 1. กวาดสายตาค้นหาต้นไม้รอบตัว 360 องศา (8 สเต็ป)
-        print("\n[*] กวาดสายตาค้นหาต้นไม้รอบตัว...")
-        for step in range(8):
-            scr = get_screen()
-            found, x_pos, area = detect_tree(scr)
-            if found:
-                print(f"[🌲] ตรวจพบต้นไม้ตรงกับเฉดสี! (X={x_pos}, ขนาด: {area:.1f})")
-                tree_found = True
-                target_x = x_pos
-                break
-            else:
-                print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
-                rotate_view_right(dist=190)
-
-        if not tree_found:
-            print("[!] ไม่พบต้นไม้รอบตัวในระยะสายตา -> ก้าวเดินสุ่มไปข้างหน้า...")
-            walk_forward(duration_ms=1200)
-            continue
-
-        # 2. หยุดนิ่ง 2 วินาทีเพื่อให้ตำแหน่งนิ่ง
-        print("[⏸] หยุดรอภาพนิ่ง 2 วินาที...")
-        time.sleep(2.0)
-
-        # 3. เดินตรงเข้าหาต้นไม้
-        print("[↑] เดินตรงเข้าหาเป้าหมายต้นไม้...")
-        for i in range(6):
-            walk_forward(duration_ms=500)
-            time.sleep(0.15)
-
-        # 4. ฟันต้นไม้ (กดปุ่มโจมตี X=1100, Y=530 รัวๆ)
-        print("[🪓] ถึงจุดหมายแล้ว -> เริ่มต้นฟันต้นไม้...")
-        for hit in range(8):
-            tap(1100, 530)
-            time.sleep(0.4)
-
-        # 5. เก็บของ (กดปุ่มรูปมือเปิด/เก็บ X=1045, Y=390)
-        time.sleep(0.5)
-        chk_scr = get_screen()
-        if check_interact_or_drop(chk_scr):
-            print("[✓] เก็บผลผลิตไม้/ไอเทมดรอป...")
-            tap(1045, 390)
-            time.sleep(0.3)
-            tap(1045, 390)
-
-        print("[✓] เสร็จสิ้น 1 รอบ -> เริ่มต้นสแกนหาต้นต่อไป...")
-        time.sleep(1.0)
-
-if __name__ == "__main__":
-    main()
+def rotate_view_right(
