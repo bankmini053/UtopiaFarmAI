@@ -166,6 +166,45 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
     return False, "ไม่ทราบ", "ไม่มี", "ลวดลายไม่ตรงกับ icons", best_target_x, best_box
 
 
+def check_tree_cut_finished(screen):
+    """
+    ข้อ 5: เช็กว่าตัดเสร็จหรือยัง
+    เงื่อนไข: No_Name_Rubber_tree.png (ไม่มีเลือด) หรือ เจอ มือ.png
+    """
+    if screen is None:
+        return False, 0, 0
+
+    # 1. ตรวจสอบปุ่ม มือ.png
+    hand_path = os.path.join(ICONS_DIR, "มือ.png")
+    if os.path.exists(hand_path):
+        tpl = cv2.imread(hand_path)
+        if tpl is not None:
+            roi_hand = screen[300:660, 200:1160]
+            if roi_hand.shape[0] > tpl.shape[0] and roi_hand.shape[1] > tpl.shape[1]:
+                res = cv2.matchTemplate(roi_hand, tpl, cv2.TM_CCOEFF_NORMED)
+                _, val, _, loc = cv2.minMaxLoc(res)
+                if val >= 0.52:
+                    hx = 200 + loc[0] + (tpl.shape[1] // 2)
+                    hy = 300 + loc[1] + (tpl.shape[0] // 2)
+                    return True, hx, hy
+
+    # 2. ตรวจสอบ No_Name_Rubber_tree.png บริเวณขวาบน
+    no_name_path = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
+    if os.path.exists(no_name_path):
+        tpl_no = cv2.imread(no_name_path)
+        if tpl_no is not None:
+            roi_name = screen[120:340, 780:1260]
+            if roi_name.shape[0] > tpl_no.shape[0] and roi_name.shape[1] > tpl_no.shape[1]:
+                res_no = cv2.matchTemplate(roi_name, tpl_no, cv2.TM_CCOEFF_NORMED)
+                _, val_no, _, _ = cv2.minMaxLoc(res_no)
+                if val_no >= 0.48:
+                    return True, 0, 0
+
+    return False, 0, 0
+
+
+
+
 def check_pickup_hand(screen):
     """ตรวจจับปุ่มรูปมือ pickup_hand.png ในพิกัดจอ"""
     if screen is None:
