@@ -537,7 +537,7 @@ def main():
         target_y = 0
         tree_info = ""
 
-                for step in range(8):
+        for step in range(8):
             scr = get_screen()
             
             # อ่านทิศทางหันหน้าจาก Mini-map
