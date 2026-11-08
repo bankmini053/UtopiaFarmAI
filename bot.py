@@ -244,7 +244,7 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
-    """ตรวจสอบชื่อเป้าหมายจาก icons: ต้องตรงกับ tree_rubber.png หรือ name_coconut.png"""
+    """ตรวจสอบชื่อเป้าหมายจาก icons: ต้องตรงกับ tree_rubber.png หรือ name_coconut.png เท่านั้น"""
     if screen is None:
         return False, "ไม่พบชื่อ"
 
@@ -262,16 +262,21 @@ def check_target_name_match(screen):
                     if val >= 0.52:
                         return True, f"ป้ายชื่อตรง {r_name} ({val:.2f})"
 
+    # ตรวจ OCR ป้องกันการตีก้อนหิน Stone Mine
     bar_roi = screen[70:240, 400:900]
-    hsv = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2HSV)
-    mask_red = cv2.bitwise_or(
-        cv2.inRange(hsv, np.array([0, 120, 100]), np.array([14, 255, 255])),
-        cv2.inRange(hsv, np.array([168, 120, 100]), np.array([180, 255, 255]))
-    )
-    if np.sum(mask_red > 0) > 45:
-        return True, "พบแถบเลือดเป้าหมาย"
+    gray = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    text = pytesseract.image_to_string(thresh, lang="eng+tha", config=r"--psm 7").strip()
+    
+    # ถ้าเจอคำว่า Stone หรือ Mine ให้ปฏิเสธทันที
+    if any(k in text.lower() for k in ["stone", "mine", "หิน"]):
+        return False, f"พบก้อนหิน ({text}) ไม่ใช่ต้นไม้"
+
+    if any(k in text.lower() for k in ["rubber", "coconut", "palm", "tree", "ยาง", "มะพร้าว"]):
+        return True, f"OCR พบชื่อต้นไม้: '{text}'"
 
     return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
+
 
 
 def pitch_camera_down():
@@ -506,56 +511,71 @@ def main():
 
         retry_mode = False
 
-        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนเลือดหมด
-        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! เริ่มต้นฟันต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
+                # =========================================================================
+        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนตรวจพบปุ่มรูปมือในจอ -> แตะปุ่มมือ 2 ครั้ง
+        # =========================================================================
+        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! เริ่มฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
         hits = 0
+        hand_detected = False
+        hx, hy = 0, 0
 
-        while hits < 40:
+        while hits < 45:
             hits += 1
             tap(1100, 530)
             time.sleep(0.35)
 
+            # ตรวจจับปุ่มรูปมือทุกๆ 2 ครั้งที่ตี
             if hits % 2 == 0:
                 chk_scr = get_screen()
-                name_alive, _ = check_target_name_match(chk_scr)
-                hand_ready, _, _, _ = check_pickup_hand(chk_scr)
+                is_hand, hand_x, hand_y, hand_src = check_pickup_hand(chk_scr)
 
-                if not name_alive or hand_ready:
-                    print(f"\n[🛑] หลอดเลือดหมด/ชื่อหาย/พบปุ่มมือ! (หยุดฟันหลังตีไป {hits} ครั้ง)")
+                if is_hand:
+                    hand_detected = True
+                    hx, hy = hand_x, hand_y
+                    print(f"\n[🖐️] ตรวจพบปุ่มรูปมือในจอ [{hand_src}] หลังตีไป {hits} ครั้ง!")
                     break
 
-        time.sleep(0.6)
+        if not hand_detected:
+            # แคปภาพเช็กซ้ำครั้งสุดท้าย
+            final_chk = get_screen()
+            is_hand, hand_x, hand_y, hand_src = check_pickup_hand(final_chk)
+            if is_hand:
+                hand_detected = True
+                hx, hy = hand_x, hand_y
 
-        # ขั้นตอนที่ 6: ตรวจสอบรูปมือในพิกัดจอ แตะรูปมือ -> Pick All
-        print("\n[6] ขั้นตอนที่ 6: ตรวจจับปุ่มรูปมือ pickup_hand.png ในพิกัดจอ...")
-        final_scr = get_screen()
-        hand_found, hx, hy, hinfo = check_pickup_hand(final_scr)
-
-        if not hand_found:
+        if not hand_detected:
             print("\n" + "=" * 60)
-            print("[!] ล้มเหลว: เลือดต้นไม้ลดหมดแล้ว แต่ไม่พบรูปมือในพิกัดจอ -> สั่งหยุดทำงาน")
+            print("[!] ล้มเหลว: ฟันจนครบกำหนดแล้วแต่ไม่พบปุ่มรูปมือ (pickup_hand.png) -> หยุดทำงาน")
             print("=" * 60)
             return
 
-        print(f"[🖐️] ตรวจพบรูปมือ! แตะเก็บไอเทมที่ ({hx}, {hy}) [{hinfo}]...")
+        print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
         tap(hx, hy)
-        time.sleep(0.5)
+        time.sleep(0.3)
+        tap(hx, hy)
+        time.sleep(0.8)
 
+        # =========================================================================
+        # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น (ไม่ขึ้นสั่ง Error ทันที)
+        # =========================================================================
+        print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ต้องมีปุ่มเขียว / คำว่า 'Pick All')...")
         dialog_scr = get_screen()
         pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
 
-        if pick_all_ready:
-            print(f"[📦] ปรากฏหน้าต่าง -> แตะปุ่มเขียว 'Pick All' ที่ ({px}, {py})")
-            tap(px, py)
-            time.sleep(0.3)
-            tap(px, py)
-        else:
-            print("[📦] แตะพิกัด Pick All (335, 545)...")
-            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
-            time.sleep(0.3)
-            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
+        # เงื่อนไข: ถ้าไม่ขึ้นหน้าต่างเก็บของ ให้หยุดและแจ้ง Error ทันที
+        if not pick_all_ready:
+            print("\n" + "=" * 60)
+            print("[!] ล้มเหลว (Error): ไม่พบหน้าต่างหรือคำว่า 'เก็บ / Pick All' ขึ้นมา -> สั่งหยุดทำงานทันที")
+            print("=" * 60)
+            return
 
-        print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์!")
+        print(f"[📦] ตรวจพบคำว่า 'Pick All' สมบูรณ์! ทำการแตะเก็บไอเทมที่ ({px}, {py})...")
+        tap(px, py)
+        time.sleep(0.25)
+        tap(px, py)
+
+        print("[✓] กดเก็บไอเทมเรียบร้อย!")
+
 
         # ขั้นตอนที่ 7: พักรอ 5 วินาที
         print("\n[7] ขั้นตอนที่ 7: รอนิ่ง 5 วินาทีเพื่อให้โมเดลในฉากหายสนิท...")
