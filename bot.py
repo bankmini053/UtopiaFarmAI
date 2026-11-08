@@ -14,11 +14,11 @@ ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
 # พารามิเตอร์หน้าจอและมุมมองกล้อง
 SCREEN_W = 1280
+SCREEN_H = 720
 HFOV_DEG = 60
-DEADZONE_PX = 40
-TURN_THRESHOLD_DEG = 22
-TURN_GAIN = 0.8
-CAMERA_PX_PER_DEG = 4.0
+DEADZONE_PX = 30
+TURN_GAIN = 0.65
+CAMERA_PX_PER_DEG = 3.8
 
 # พิกัดปุ่ม Pick All สีเขียว
 PICK_ALL_BTN = (335, 545)
@@ -37,12 +37,13 @@ def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
 
-def swipe_screen(x1, y1, x2, y2, duration=240):
+def swipe_screen(x1, y1, x2, y2, duration=220):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
 
 
 def get_screen():
     run_cmd(f"screencap -p {TMP_PATH}")
+    run_cmd(f"chmod 777 {TMP_PATH}")
     if os.path.exists(TMP_PATH):
         img = cv2.imread(TMP_PATH)
         if img is not None:
@@ -192,10 +193,11 @@ def check_pick_all_dialog(screen):
 
 
 def detect_target_tree(screen):
+    """ตรวจจับหาต้นไม้รอบจอ และรายงานพิกัด X, Y ความสูง และพื้นที่อย่างแม่นยำ"""
     if screen is None:
-        return False, "ไม่พบ", 0, 0, 0
+        return False, "ไม่พบ", 0, 0, 0, 0
 
-    target_roi = screen[40:620, 80:1200]
+    target_roi = screen[40:600, 80:1200]
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
@@ -203,6 +205,7 @@ def detect_target_tree(screen):
 
     best_match_val = -1
     best_x = 0
+    best_y = 0
     best_h = 0
     best_area = 0
     matched_filename = ""
@@ -229,17 +232,18 @@ def detect_target_tree(screen):
             res = cv2.matchTemplate(gray_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-            if max_val >= 0.48 and max_val > best_match_val:
+            if max_val >= 0.47 and max_val > best_match_val:
                 best_match_val = max_val
                 best_x = 80 + max_loc[0] + (tw // 2)
+                best_y = 40 + max_loc[1] + (th // 2)
                 best_h = th
                 best_area = tw * th
                 matched_filename = f"{fname} ({max_val:.2f})"
 
-    if best_match_val >= 0.48:
-        return True, matched_filename, best_x, best_area, best_h
+    if best_match_val >= 0.47:
+        return True, matched_filename, best_x, best_y, best_area, best_h
 
-    return False, "ไม่พบ", 0, 0, 0
+    return False, "ไม่พบ", 0, 0, 0, 0
 
 
 def check_target_name_match(screen):
@@ -283,8 +287,8 @@ def walk_direction(deg=0, duration_ms=450):
 
 def rotate_view_right(dist=180):
     cx, cy = 850, 240
-    swipe_screen(cx, cy, cx - dist, cy, duration=240)
-    time.sleep(0.4)
+    swipe_screen(cx, cy, cx - dist, cy, duration=220)
+    time.sleep(0.35)
 
 
 def pixel_to_angle(target_x):
@@ -296,16 +300,17 @@ def pixel_to_angle(target_x):
     return math.degrees(math.atan(off / f))
 
 
-def turn_camera(angle_deg):
-    px = int(min(abs(angle_deg) * TURN_GAIN * CAMERA_PX_PER_DEG, 550))
+def turn_camera_smooth(angle_deg):
+    """ปรับมุมกล้องแบบ Proportional ไม่ให้หันกระชากหรือคลาดเคลื่อน"""
+    px = int(min(abs(angle_deg) * TURN_GAIN * CAMERA_PX_PER_DEG, 420))
     if px < 15:
         return
     cx, cy = 850, 240
     if angle_deg > 0:
-        swipe_screen(cx, cy, cx - px, cy, duration=220)
+        swipe_screen(cx, cy, cx - px, cy, duration=180)
     else:
-        swipe_screen(cx, cy, cx + min(px, 360), cy, duration=220)
-    time.sleep(0.35)
+        swipe_screen(cx, cy, cx + min(px, 320), cy, duration=180)
+    time.sleep(0.25)
 
 
 def calculate_walk_angle(target_x):
@@ -315,13 +320,13 @@ def calculate_walk_angle(target_x):
     elif ang > 1.5:
         label = "เอียงขวา"
     else:
-        label = "ตรง"
-    return ang % 360, f"{label} {ang:+.1f}°"
+        label = "ตรงกลาง"
+    return ang % 360, f"{label} {ang:+.1f}°", ang
 
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ระบบฟาร์มอัตโนมัติ (กรอบเขียวล็อกเป้าหมายจริง)")
+    print("[*] UtopiaFarmAI: ระบบตรวจจับคำนวณพิกัดสด (Live Real-Time Radar)")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     print("=" * 60)
     time.sleep(2)
@@ -340,11 +345,11 @@ def main():
 
         for step in range(8):
             scr = get_screen()
-            found, src, cx, area, h = detect_target_tree(scr)
+            found, src, cx, cy, area, h = detect_target_tree(scr)
             if found:
                 candidate_found = True
                 target_x = cx
-                print(f"\n[🌲] พบเป้าหมายที่มุม {step + 1}/8! [{src}] (X={cx}, สูง={h}px)")
+                print(f"\n[🌲] พบเป้าหมายที่มุม {step + 1}/8! [{src}] (พิกัดสด: X={cx}, Y={cy}, สูง={h}px)")
                 break
             else:
                 print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
@@ -356,11 +361,9 @@ def main():
             print("=" * 55)
             return
 
-        # ขั้นตอนที่ 2: ตีกรอบสีเขียวครอบต้นไม้ที่ใหญ่ที่สุด
-        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
-        time.sleep(1.0)
-        print("[🔬] คำนวณเลือกต้นไม้ที่ใหญ่ที่สุด และตีกรอบสี่เหลี่ยมสีเขียวล็อกเป้า...")
-
+        # ขั้นตอนที่ 2: ล็อกเป้าหมายและตีกรอบสีเขียว
+        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่ง และคำนวณพิกัดกรอบเขียว...")
+        time.sleep(0.8)
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x, tree_box = optical_zoom_analysis(zoom_scr, target_x)
         target_x = nearest_x
@@ -373,63 +376,56 @@ def main():
             cv2.putText(locked_img, f"TARGET LOCKED: {tree_type_name}", (bx, max(30, by - 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
             cv2.imwrite(LOCKED_IMG_PATH, locked_img)
-            print(f"[🎯] ยืนยันต้นไม้เป้าหมาย! ตีกรอบสีเขียวที่ X={bx}, Y={by} (กว้าง {bw}px, สูง {bh}px)")
-            print(f"[*] บันทึกภาพกรอบเขียวไว้ที่: {LOCKED_IMG_PATH}")
-
-        print("\n" + "=" * 50)
-        print(f"[🔍] ผลการวิเคราะห์ผ่านเลนส์ซูม:")
-        print(f"  - ชนิดเป้าหมาย : {tree_type_name}")
-        print(f"  - ไฟล์ที่ตรงกัน : {matched_file}")
-        print(f"  - พิกัดเป้าหมาย : X={target_x}")
-        print(f"  - รายละเอียด  : {zoom_detail}")
-        print("=" * 50)
+            print(f"[🎯] ยืนยันเป้าหมาย! ตีกรอบสีเขียวที่ X={bx}, Y={by} (กว้าง {bw}px, สูง {bh}px)")
 
         if not is_real_tree:
             print("[⚠️] ปฏิเสธเป้าหมาย: ไม่ตรงกับ icons -> หมุนค้นหาต่อ")
             rotate_view_right(dist=180)
             continue
 
-        print(f"[✓] ล็อกกรอบสีเขียวสำเร็จ เตรียมเดินเข้าหาต้นนี้ก่อน...")
-        time.sleep(1.0)
-
-        # ขั้นตอนที่ 3: เดินเข้าหาตามแนวราบ (แก้ไขการตัดระยะเร็วเกินไป)
-        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมายตามแนวระนาบปกติ...")
+        # ขั้นตอนที่ 3: เดินเข้าหาแบบ Live Tracking (คำนวณและรายงานพิกัดตลอดเวลา)
+        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมาย (คำนวณภาพสดและแก้ทิศทางทุกก้าว)...")
         reached_close = False
 
-        for step in range(25):
+        for step in range(30):
             curr_scr = get_screen()
 
-            # หากขึ้นปุ่มรูปมือระหว่างเดิน แสดงว่าประชิดเป้าหมายแล้ว
+            # ตรวจสอบปุ่มรูปมือก่อนทุกครั้ง
             if check_pickup_hand(curr_scr)[0]:
-                print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
+                print("\n[🎯] ตรวจพบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
 
-            found_step, _, cur_x, cur_area, cur_h = detect_target_tree(curr_scr)
+            found_step, src, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                ang = pixel_to_angle(cur_x)
-                if abs(ang) > TURN_THRESHOLD_DEG:
-                    turn_camera(ang)
+                walk_deg, direction_label, raw_ang = calculate_walk_angle(cur_x)
+                offset_from_center = cur_x - (SCREEN_W // 2)
+
+                # รายงานพิกัดและการคำนวณภาพสดตลอดเวลา
+                print(f"[📍 LIVE RADAR] ก้าวที่ {step + 1:02d} | พิกัด: ({cur_x:4d}, {cur_y:3d}) | "
+                      f"สูง: {cur_h:3d}px | เบี่ยง: {offset_from_center:+4d}px | ปรับทิศ: {direction_label}")
+
+                # ปรับมุมมองกล้องให้อยู่ตรงกลางจอแบบละมุนตาหากเบี่ยงเบน
+                if abs(raw_ang) > 12:
+                    turn_camera_smooth(raw_ang)
                     curr_scr = get_screen()
 
-                walk_deg, direction_label = calculate_walk_angle(cur_x)
-                print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | ความสูง={cur_h}px")
-
-                # บังคับเดินอย่างน้อย 5 ก้าวขึ้นไป และขยายใหญ่ >= 420px จริงๆ จึงหยุด
-                if step >= 5 and cur_h >= 420:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
+                # บังคับเดินอย่างน้อย 4 ก้าว และลำต้นขยายใหญ่เต็มหน้าจอจริง
+                if step >= 4 and cur_h >= 400:
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
                 walk_direction(walk_deg, duration_ms=480)
-                time.sleep(0.1)
+                time.sleep(0.08)
             else:
-                walk_direction(0, duration_ms=400)
-                time.sleep(0.1)
+                print(f"[⚠️ LIVE RADAR] ก้าวที่ {step + 1:02d} | หลุดมุมกล้องชั่วคราว -> ดันเดินตรงต่อ")
+                walk_direction(0, duration_ms=380)
+                time.sleep(0.08)
 
-        # ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อตรวจชื่อ
-        print(f"\n[4] ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อเช็กชื่อต้นไม้ ({tree_type_name})...")
+        # ขั้นตอนที่ 4: ตี 1 ครั้งเพื่อตรวจสอบชื่อ
+        print(f"\n[4] ขั้นตอนที่ 4: กดตี 1 ครั้งเพื่อเช็กชื่อเป้าหมาย ({tree_type_name})...")
         tap(1100, 530)
         time.sleep(0.7)
 
@@ -439,20 +435,20 @@ def main():
 
         if not name_matched:
             if not retry_mode:
-                print("\n[⚠️] ตี 1 ครั้งแล้วไม่พบชื่อที่ถูกต้อง -> ย้อนกลับไปขั้นตอนที่ 1 เพื่อมองหาใหม่...")
+                print("\n[⚠️] ตี 1 ครั้งแล้วไม่พบชื่อที่ถูกต้อง -> ย้อนกลับไปค้นหาใหม่ (แก้มือ 1 รอบ)...")
                 retry_mode = True
                 rotate_view_right(dist=180)
                 continue
             else:
                 print("\n" + "=" * 60)
-                print("[!] ล้มเหลว: วนกลับมาตีรอบที่ 2 แล้วยังไม่มีชื่อขึ้นมา -> สั่งหยุดทำงาน")
+                print("[!] ล้มเหลว: ย้อนกลับมาตีรอบ 2 แล้วยังไม่พบชื่อ -> สั่งหยุดทำงาน")
                 print("=" * 60)
                 return
 
         retry_mode = False
 
         # ขั้นตอนที่ 5: ฟันต่อเนื่องจนเจอปุ่มรูปมือ -> กดปุ่มมือ 2 ครั้ง
-        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! เริ่มต้นฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
+        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! ฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
         hits = 0
         hand_detected = False
         hx, hy = 0, 0
@@ -468,7 +464,7 @@ def main():
                 if is_hand:
                     hand_detected = True
                     hx, hy = hand_x, hand_y
-                    print(f"\n[🖐️] ตรวจพบปุ่มรูปมือในจอ [{hand_src}] หลังตีไป {hits} ครั้ง!")
+                    print(f"\n[🖐️] ตรวจพบปุ่มรูปมือ [{hand_src}] หลังตีไป {hits} ครั้ง!")
                     break
 
         if not hand_detected:
@@ -480,7 +476,7 @@ def main():
 
         if not hand_detected:
             print("\n" + "=" * 60)
-            print("[!] ล้มเหลว: ฟันจนครบกำหนดแล้วแต่ไม่พบปุ่มรูปมือ (pickup_hand.png) -> หยุดทำงาน")
+            print("[!] ล้มเหลว: ฟันครบกำหนดแล้วแต่ไม่พบปุ่มรูปมือ (pickup_hand.png) -> หยุดทำงาน")
             print("=" * 60)
             return
 
@@ -491,7 +487,7 @@ def main():
         time.sleep(0.8)
 
         # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
-        print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ต้องมีปุ่มเขียว / คำว่า 'Pick All')...")
+        print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ต้องมีปุ่มเขียว หรือคำว่า 'Pick All')...")
         dialog_scr = get_screen()
         pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
 
@@ -501,7 +497,7 @@ def main():
             print("=" * 60)
             return
 
-        print(f"[📦] ตรวจพบคำว่า 'Pick All' สมบูรณ์! ทำการแตะเก็บไอเทมที่ ({px}, {py})...")
+        print(f"[📦] ตรวจพบคำว่า 'Pick All' สมบูรณ์! แตะเก็บไอเทมที่ ({px}, {py})...")
         tap(px, py)
         time.sleep(0.25)
         tap(px, py)
@@ -519,4 +515,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
