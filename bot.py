@@ -206,6 +206,73 @@ def check_pick_all_dialog(screen):
     return False, 0, 0
 
 
+
+def check_bag_status(screen):
+    """
+    ข้อ 1: ตรวจสอบสถานะกระเป๋า
+    คืนค่า: 'full' (กระเป๋าส้ม.png), 'normal' (กระเป๋า.png), 'unknown' (ไม่พบ)
+    """
+    if screen is None:
+        return "unknown"
+
+    # โซนกระเป๋า (ปกติอยู่แถบขวาบนหรือขวาล่าง ให้ครอบคลุมขอบจอ)
+    # เช็กกระเป๋าส้มก่อน
+    f_orange = os.path.join(ICONS_DIR, "กระเป๋าส้ม.png")
+    if os.path.exists(f_orange):
+        tpl = cv2.imread(f_orange)
+        if tpl is not None:
+            res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if val >= 0.60:
+                return "full"
+
+    # เช็กกระเป๋าปกติ
+    f_normal = os.path.join(ICONS_DIR, "กระเป๋า.png")
+    if os.path.exists(f_normal):
+        tpl = cv2.imread(f_normal)
+        if tpl is not None:
+            res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if val >= 0.60:
+                return "normal"
+
+    return "normal"
+
+
+def check_axe_status(screen):
+    """
+    ข้อ 2: ตรวจสอบสถานะขวานแถบล่าง
+    คืนค่า: True (พร้อมใช้ ขวาน.png), False (พัง/แถบแดง ขวานแดง.png)
+    """
+    if screen is None:
+        return True
+
+    # โซนแถบช่องใส่อุปกรณ์ด้านล่าง (Y=560-720, X=350-950)
+    roi = screen[560:720, 350:950]
+
+    # ตรวจสอบขวานแดงก่อน (ถ้าพังให้หยุดทันที)
+    f_broken = os.path.join(ICONS_DIR, "ขวานแดง.png")
+    if os.path.exists(f_broken):
+        tpl = cv2.imread(f_broken)
+        if tpl is not None and roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
+            res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if val >= 0.55:
+                return False  # ขวานพัง
+
+    # ตรวจสอบขวานปกติสีเขียว
+    f_ready = os.path.join(ICONS_DIR, "ขวาน.png")
+    if os.path.exists(f_ready):
+        tpl = cv2.imread(f_ready)
+        if tpl is not None and roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
+            res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if val >= 0.50:
+                return True
+
+    return True
+
+
 def detect_target_tree(screen):
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0, 0
