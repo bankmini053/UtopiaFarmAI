@@ -31,13 +31,13 @@ def main():
     print("[*] UtopiaFarmAI: เครื่องมือตรวจจับสายตาบอท (Visual Debug)")
     print("=" * 60)
 
-    # นับถอยหลัง 5 วินาทีเพื่อให้ผู้ใช้สลับหน้าจอเข้าเกม
-    print("\n[⏳] กำลังเริ่มทำงานใน 5 วินาที... (กรุณาสลับหน้าจอเข้าเกมตอนนี้)")
+    # นับถอยหลัง 5 วินาทีเพื่อให้สลับหน้าจอเข้าเกม
+    print("\n[⏳] กำลังเริ่มทำงานใน 5 วินาที... (สลับหน้าจอเข้าเกมตอนนี้)")
     for i in range(5, 0, -1):
         print(f"[*] นับถอยหลัง... {i} วินาที")
         time.sleep(1.0)
 
-    print("\n[📸] กำลังแคปหน้าจอและวิเคราะห์สิ่งที่บอทมองเห็น...")
+    print("\n[📸] กำลังแคปหน้าจอและวิเคราะห์เป้าหมาย...")
     screen = get_screen()
     if screen is None:
         print("[!] ไม่สามารถแคปภาพหน้าจอได้")
@@ -50,9 +50,11 @@ def main():
     tree_files = ["tree_name1.png", "tree_coconut.png", "tree_coconut2.png"]
     found_any = False
 
-    print("\n" + "=" * 50)
-    print("  พิกัดและเป้าหมายที่บอทตรวจพบในจอขณะนี้:")
-    print("=" * 50)
+    print("\n" + "=" * 55)
+    print("  รายชื่อและพิกัดต้นไม้ที่บอทตรวจพบในจอ (แบบกรองกรอบซ้ำ):")
+    print("=" * 55)
+
+    tree_count = 0
 
     for fname in tree_files:
         icon_path = os.path.join(ICONS_DIR, fname)
@@ -75,41 +77,49 @@ def main():
             res = cv2.matchTemplate(gray_roi, cv2.resize(gray_tpl, (tw, th)), cv2.TM_CCOEFF_NORMED)
             locs = np.where(res >= 0.48)
 
+            raw_boxes = []
             for pt in zip(*locs[::-1]):
-                real_x1 = 80 + pt[0]
-                real_y1 = 40 + pt[1]
-                real_x2 = real_x1 + tw
-                real_y2 = real_y1 + th
-                center_x = real_x1 + (tw // 2)
-                center_y = real_y1 + (th // 2)
+                bx = int(80 + pt[0])
+                by = int(40 + pt[1])
+                raw_boxes.append([bx, by, tw, th])
+                raw_boxes.append([bx, by, tw, th])
 
+            if len(raw_boxes) == 0:
+                continue
+
+            # รวมกรอบพิกเซลที่ซ้อนทับกันให้เหลือเพียง 1 กรอบต่อ 1 จุด
+            grouped_boxes, _ = cv2.groupRectangles(raw_boxes, groupThreshold=1, eps=0.25)
+
+            for (rx, ry, bw, bh) in grouped_boxes:
+                tree_count += 1
                 found_any = True
-                print(f"[🌲 พบเป้าหมาย] ไฟล์: {fname} | สเกล: {scale:.1f}x")
-                print(f"    - พิกัดกึ่งกลางเป้าหมาย : X = {center_x}, Y = {center_y}")
-                print(f"    - กรอบพื้นที่ (Bounding Box) : กว้าง {tw}px, สูง {th}px")
-                print(f"    - พิกัดมุมกล่อง : ({real_x1}, {real_y1}) ถึง ({real_x2}, {real_y2})")
-                print("-" * 45)
+                cx = rx + (bw // 2)
+                cy = ry + (bh // 2)
 
-                # วาดกรอบสี่เหลี่ยมสีเขียวครอบต้นไม้ และจุดกึ่งกลางสีแดง
-                cv2.rectangle(debug_img, (real_x1, real_y1), (real_x2, real_y2), (0, 255, 0), 3)
-                cv2.circle(debug_img, (center_x, center_y), 6, (0, 0, 255), -1)
-                cv2.putText(debug_img, f"{fname} ({scale:.1f}x)", (real_x1, max(30, real_y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                print(f"[🌲 ต้นที่ {tree_count}] ไฟล์: {fname} (ขนาดสเกล {scale:.1f}x)")
+                print(f"    - พิกัดกึ่งกลางเป้าหมาย : X = {cx}, Y = {cy}")
+                print(f"    - ขนาดกรอบ (Bounding Box) : กว้าง {bw}px, สูง {bh}px")
+                print(f"    - ขอบเขตพื้นที่ : ({rx}, {ry}) ถึง ({rx + bw}, {ry + bh})")
+                print("-" * 50)
+
+                # วาดกรอบสี่เหลี่ยมสีเขียวและจุดแดงลงบนภาพ
+                cv2.rectangle(debug_img, (rx, ry), (rx + bw, ry + bh), (0, 255, 0), 3)
+                cv2.circle(debug_img, (cx, cy), 6, (0, 0, 255), -1)
+                cv2.putText(debug_img, f"{fname}", (rx, max(25, ry - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
     # วาดจุดกึ่งกลางจอ (ตำแหน่งสายตา/หัวตัวละคร)
     cv2.circle(debug_img, (640, 360), 8, (255, 255, 0), -1)
-    cv2.putText(debug_img, "Center Screen (640, 360)", (540, 395),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+    cv2.putText(debug_img, "Center (640, 360)", (540, 395),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
 
     if not found_any:
-        print("[!] บอทมองไม่พบต้นไม้ใด ๆ จากไฟล์ใน icons เลย")
+        print("[!] ไม่พบต้นไม้ใด ๆ ในหน้าจอนี้ตามไฟล์ต้นแบบใน icons")
     else:
-        # บันทึกภาพผลลัพธ์
         cv2.imwrite(OUTPUT_DEBUG_IMG, debug_img)
-        print("\n[✓] วาดกรอบสี่เหลี่ยมสีเขียวระบุพิกัดสำเร็จ!")
-        print(f"[*] ภาพผลลัพธ์ถูกเซฟไว้ที่: {OUTPUT_DEBUG_IMG}")
+        print(f"\n[✓] ประมวลผลเสร็จสิ้น! พบต้นไม้ทั้งหมด {tree_count} จุด")
+        print(f"[*] บันทึกภาพผลลัพธ์พร้อมตีกรอบไว้ที่: {OUTPUT_DEBUG_IMG}")
 
 
 if __name__ == "__main__":
     main()
-  
