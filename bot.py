@@ -283,4 +283,69 @@ def main():
             print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px | ขนาด={cur_area:.0f}")
 
             # เกณฑ์แนบชิดตัวละครจริงแบบรูป 6175: ลำต้นสูงเกิน 360px หรือขนาดกินพื้นที่เกิน 28,000px
-            if cur_h >= 360 or cur_area >= 280
+            if cur_h >= 360 or cur_area >= 28000:
+                print(f"\n[🎯] วัตถุขยายใหญ่เต็มหน้าจอแนบชิดตัวละครแล้ว! (สูง: {cur_h}px, ขนาด: {cur_area:.0f})")
+                reached_close = True
+                break
+
+            walk_direction(walk_deg, duration_ms=460)
+            time.sleep(0.1)
+        else:
+            walk_direction(0, duration_ms=350)
+            time.sleep(0.1)
+
+    # 4. ทดสอบฟัน 1 ครั้งเพื่อเช็กชื่อเป้าหมาย (ถ้าไม่ขึ้น ให้ก้าวชนเข้าไปอีก 1 ก้าวแล้วตีใหม่)
+    name_verified = False
+    for verify_attempt in range(4):
+        print(f"\n[🪓] ทดสอบกดตีครั้งที่ {verify_attempt + 1} เพื่อเช็กชื่อเป้าหมาย...")
+        tap(1100, 530)
+        time.sleep(0.65)
+
+        target_scr = get_screen()
+        name_matched, name_detail = check_target_name_match(target_scr)
+        print(f"[*] ผลการตรวจชื่อ: {name_detail}")
+
+        if name_matched:
+            name_verified = True
+            break
+        else:
+            print("[?] ยังไม่ขึ้นชื่อ (ขวานยังไม่โดนเนื้อไม้) -> ขยับเดินชนเข้าไปอีก 1 ก้าว...")
+            walk_direction(0, duration_ms=450)
+            time.sleep(0.2)
+
+    # 5. ฟันต่อเนื่องจนเลือดหมด และกดเก็บของ
+    if name_verified:
+        print("[✓] ยืนยันชื่อถูกต้อง! ฟันต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
+        hits = 0
+        while hits < 35:
+            hits += 1
+            tap(1100, 530)
+            time.sleep(0.38)
+
+            if hits % 3 == 0:
+                chk_scr = get_screen()
+                hand_ready, _, _, _ = check_pickup_hand(chk_scr)
+                name_alive, _ = check_target_name_match(chk_scr)
+                if hand_ready or not name_alive:
+                    print(f"[✓] ต้นไม้ล้มเรียบร้อยแล้ว (ฟันไปทั้งหมด {hits} ครั้ง)")
+                    break
+
+        # เก็บของด้วย pickup_hand.png
+        time.sleep(0.6)
+        for _ in range(4):
+            final_scr = get_screen()
+            hand_found, hx, hy, hinfo = check_pickup_hand(final_scr)
+            if hand_found:
+                print(f"[✓] แตะปุ่มเก็บไอเทม ({hinfo}) ที่พิกัด ({hx}, {hy})...")
+                tap(hx, hy)
+                time.sleep(0.3)
+            else:
+                break
+        print("\n[✓] เสร็จสิ้นภารกิจ 1 รอบสมบูรณ์!")
+    else:
+        print("\n[!] ล้มเหลว: เดินเข้าไปตีแล้วไม่พบชื่อเป้าหมาย")
+
+
+if __name__ == "__main__":
+    main()
+    
