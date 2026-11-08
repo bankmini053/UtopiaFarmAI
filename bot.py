@@ -43,7 +43,7 @@ def get_screen():
     return None
 
 
-def match_texture(target_img, icon_filename, threshold=0.55):
+def match_texture(target_img, icon_filename, threshold=0.48):
     """จับคู่ลวดลายกับไฟล์ภาพต้นแบบใน icons/"""
     icon_path = os.path.join(ICONS_DIR, icon_filename)
     if not os.path.exists(icon_path):
@@ -70,10 +70,7 @@ def match_texture(target_img, icon_filename, threshold=0.55):
 
 
 def optical_zoom_analysis(screen, target_x, target_y=260):
-    """
-    ซูมสายตาบอท (Digital Zoom) เพื่อระบุชื่อไฟล์และประเภทต้นไม้
-    คืนค่า: (พบหรือไม่, ชื่อต้นไม้, ชื่อไฟล์ไอคอน, รายละเอียด)
-    """
+    """ซูมสายตาบอท (Digital Zoom) เพื่อระบุชื่อไฟล์และประเภทต้นไม้"""
     if screen is None:
         return False, "ไม่ทราบ", "ไม่มี", "ไม่พบภาพ"
 
@@ -95,8 +92,6 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
     enhanced = cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
 
     zoom_scales = [1.0, 1.4, 1.8]
-    
-    # จับคู่ไฟล์ลวดลายกับชนิดของต้นไม้
     tree_file_map = {
         "tree_coconut.png": "ต้นมะพร้าว (Coconut Tree)",
         "tree_coconut2.png": "ต้นมะพร้าวลาย 2 (Coconut Tree)",
@@ -107,22 +102,12 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
     for sc in zoom_scales:
         scaled_img = cv2.resize(enhanced, (0, 0), fx=sc, fy=sc, interpolation=cv2.INTER_LINEAR)
         for icon_fname, tree_name in tree_file_map.items():
-            matched, conf = match_texture(scaled_img, icon_fname, threshold=0.52)
+            matched, conf = match_texture(scaled_img, icon_fname, threshold=0.46)
             if matched:
                 detail = f"ซูม {sc:.1f}x พบลวดลายตรงกับ '{icon_fname}' (ความแม่นยำ: {conf:.2f})"
                 return True, tree_name, icon_fname, detail
 
-    # ระบบสำรอง HSV กรณีแสงเปลี่ยนแต่ทรงลำต้นชัดเจน
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
-    lower_bark = np.array([5, 30, 25])
-    upper_bark = np.array([28, 220, 160])
-    mask = cv2.inRange(hsv, lower_bark, upper_bark)
-    bark_pixels = np.sum(mask > 0)
-
-    if bark_pixels > 2500:
-        return True, "ต้นไม้ทั่วไป", "HSV_Color_Mask", f"ซูมพบโครงสร้างลำต้นไม้ ({bark_pixels} px)"
-
-    return False, "ไม่ทราบ", "ไม่มี", "แสงสะท้อนหรือลวดลายไม่ตรงกับไฟล์ใน icons"
+    return False, "ไม่ทราบ", "ไม่มี", "ลวดลายไม่ตรงกับไฟล์ภาพต้นแบบใน icons"
 
 
 def check_pickup_hand(screen):
@@ -135,7 +120,7 @@ def check_pickup_hand(screen):
             if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                 res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
                 _, val, _, loc = cv2.minMaxLoc(res)
-                if val >= 0.60:
+                if val >= 0.58:
                     return True, 950 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
 
     hand_roi = screen[350:440, 1000:1090]
@@ -147,30 +132,50 @@ def check_pickup_hand(screen):
 
 
 def detect_target_tree(screen):
-    """กวาดสายตาเบื้องต้น 360 องศา"""
+    """ตรวจหาต้นไม้จากไฟล์ภาพใน icons/ ล้วนๆ 100% (ไม่ใช้เฉดสี HSV)"""
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0
 
-    roi = screen[40:540, 80:1200]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    lower_bark = np.array([5, 35, 30])
-    upper_bark = np.array([28, 220, 160])
-    mask = cv2.inRange(hsv, lower_bark, upper_bark)
-    clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    target_roi = screen[40:540, 80:1200]
+    sh, sw = target_roi.shape[:2]
 
-    best_x, max_area, best_h = 0, 0, 0
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 1000:
-            x, y, w, h = cv2.boundingRect(cnt)
-            if h >= 70 and area > max_area:
-                max_area = area
-                best_h = h
-                best_x = x + 80 + (w // 2)
+    tree_files = ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png", "tree_rubber.png"]
 
-    if max_area > 0:
-        return True, "รูปทรงลำต้นไม้", best_x, max_area, best_h
+    best_match_val = -1
+    best_x = 0
+    best_h = 0
+    best_area = 0
+    matched_filename = ""
+
+    for fname in tree_files:
+        icon_path = os.path.join(ICONS_DIR, fname)
+        if not os.path.exists(icon_path):
+            continue
+
+        template = cv2.imread(icon_path)
+        if template is None:
+            continue
+
+        for scale in [0.5, 0.7, 1.0, 1.3]:
+            tw = int(template.shape[1] * scale)
+            th = int(template.shape[0] * scale)
+
+            if th >= sh or tw >= sw or th < 15 or tw < 15:
+                continue
+
+            resized_tpl = cv2.resize(template, (tw, th))
+            res = cv2.matchTemplate(target_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+            if max_val >= 0.45 and max_val > best_match_val:
+                best_match_val = max_val
+                best_x = 80 + max_loc[0] + (tw // 2)
+                best_h = th
+                best_area = tw * th
+                matched_filename = f"{fname} (สเกล {scale:.1f}x, มั่นใจ {max_val:.2f})"
+
+    if best_match_val >= 0.45:
+        return True, matched_filename, best_x, best_area, best_h
 
     return False, "ไม่พบ", 0, 0, 0
 
@@ -189,7 +194,7 @@ def check_target_name_match(screen):
                 if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                     res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
                     _, val, _, _ = cv2.minMaxLoc(res)
-                    if val >= 0.58:
+                    if val >= 0.55:
                         return True, f"ป้ายชื่อตรง {r_name} ({val:.2f})"
 
     bar_roi = screen[70:220, 420:860]
@@ -263,14 +268,14 @@ def calculate_walk_angle(target_x):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ซูมวิเคราะห์ชื่อต้นไม้/ไฟล์ -> เดินประชิด -> ไม่เจอ 3 ครั้งหยุดล้มเหลว")
+    print("[*] UtopiaFarmAI: ตรวจจับไฟล์รูปภาพต้นไม้ 100% -> ซูมวิเคราะห์ -> แนบชิด")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     print("=" * 60)
     time.sleep(2)
 
     while True:
-        # 1. กวาดสายตา 360 องศา (8 มุม)
-        print("\n[*] กวาดสายตา 360 องศาค้นหาเป้าหมายรอบตัว...")
+        # 1. กวาดสายตา 360 องศา (8 มุม) โดยเทียบกับไฟล์รูปภาพต้นไม้โดยตรง
+        print("\n[*] กวาดสายตา 360 องศาค้นหาลวดลายไฟล์รูปภาพต้นไม้รอบตัว...")
         candidate_found = False
         target_x = 0
 
@@ -280,24 +285,24 @@ def main():
             if found:
                 candidate_found = True
                 target_x = cx
-                print(f"\n[🌲] พบจุดน่าสงสัยที่มุม {step + 1}/8! (X={cx}, สูง={h}px)")
+                print(f"\n[🌲] พบลวดลายตรงกับไฟล์ที่มุม {step + 1}/8! [{src}] (X={cx}, สูง={h}px)")
                 break
             else:
                 print(f"[🔄] สแกนมุม {step + 1}/8 -> กำลังหมุนขวาต่อ...")
                 rotate_view_right(dist=180)
 
         if not candidate_found:
-            print("\n[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบต้นไม้ -> หยุดการทำงาน")
+            print("\n[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบไฟล์ต้นไม้ -> หยุดการทำงาน")
             return
 
-        # 2. ล็อกจอภาพนิ่งสนิท แล้วเปิดโหมด Digital Optical Zoom ตรวจสอบชื่อต้นไม้และชื่อไฟล์
+        # 2. ล็อกจอภาพนิ่งสนิท แล้วเปิดโหมด Digital Zoom
         print("[🛑] ล็อกหน้าจอนิ่งสนิท ไม่ขยับมุมมอง...")
         time.sleep(1.0)
         print("[🔬] เปิดโหมดซูมสายตา (Digital Zoom) เพื่อระบุชื่อไฟล์และประเภทต้นไม้...")
 
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail = optical_zoom_analysis(zoom_scr, target_x)
-        
+
         print("\n" + "=" * 50)
         print(f"[🔍] ผลการวิเคราะห์ผ่านเลนส์ซูม:")
         print(f"  - ชนิดเป้าหมาย : {tree_type_name}")
@@ -335,10 +340,10 @@ def main():
                         continue
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
-                print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px | ขนาด={cur_area:.0f}")
+                print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px")
 
-                if cur_h >= 360 or cur_area >= 28000:
-                    print(f"\n[🎯] ลำต้นแนบชิดตัวละครแล้ว! (สูง: {cur_h}px, ขนาด: {cur_area:.0f})")
+                if cur_h >= 320 or cur_area >= 24000:
+                    print(f"\n[🎯] ลำต้นแนบชิดตัวละครแล้ว! (สูง: {cur_h}px)")
                     reached_close = True
                     break
 
@@ -348,7 +353,7 @@ def main():
                 walk_direction(0, duration_ms=350)
                 time.sleep(0.1)
 
-        # 4. ทดสอบฟันเพื่อเช็กชื่อ: ถ้าทดสอบครบ 3 ครั้งแล้วไม่มีชื่อ ให้หยุดและแจ้งล้มเหลวทันที
+        # 4. ทดสอบฟันเพื่อเช็กชื่อ: ตีครบ 3 ครั้งไม่มีชื่อให้หยุดล้มเหลว
         name_verified = False
         for verify_attempt in range(1, 4):
             print(f"\n[🪓] ทดสอบกดตีครั้งที่ {verify_attempt}/3 เพื่อเช็กป้ายชื่อเป้าหมาย...")
@@ -368,14 +373,13 @@ def main():
                     walk_direction(0, duration_ms=450)
                     time.sleep(0.2)
 
-        # เงื่อนไขล้มเหลว: ตีครบ 3 ครั้งแล้วยังไม่มีชื่อขึ้นมา
         if not name_verified:
             print("\n" + "=" * 55)
             print("[!] ล้มเหลว: ทดสอบตีครบ 3 ครั้งแล้วไม่มีชื่อ/แถบเลือดขึ้นมา -> สั่งหยุดการทำงานทันที")
             print("=" * 55)
             return
 
-        # 5. ยืนยันชื่อถูกต้อง -> ฟันต่อเนื่องจนเลือดหมด และกดเก็บของ
+        # 5. ฟันจนเลือดหมด และเก็บของ
         print(f"[✓] ยืนยันชื่อถูกต้อง! เริ่มต้นฟัน {tree_type_name} ต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
         hits = 0
         while hits < 35:
