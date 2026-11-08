@@ -122,7 +122,6 @@ def check_pickup_hand(screen):
     if os.path.exists(icon_path):
         tpl = cv2.imread(icon_path)
         if tpl is not None:
-            # ค้นหาบริเวณฝั่งขวาและรอบตัวละคร
             roi = screen[300:660, 200:1160]
             if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                 res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
@@ -155,12 +154,13 @@ def check_pick_all_dialog(screen):
 
 
 def detect_target_tree(screen):
-    """ตรวจหาต้นไม้จากไฟล์ภาพใน icons/ ล้วนๆ 100% (ไม่ใช้เฉดสี HSV)"""
+    """ตรวจหาต้นไม้จากไฟล์ภาพใน icons/ แบบแม่นยำ ไม่เพี้ยนตามแสง"""
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0
 
     target_roi = screen[40:540, 80:1200]
     sh, sw = target_roi.shape[:2]
+    gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
     tree_files = ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png", "tree_rubber.png"]
 
@@ -179,25 +179,29 @@ def detect_target_tree(screen):
         if template is None:
             continue
 
-        for scale in [0.5, 0.7, 1.0, 1.3]:
-            tw = int(template.shape[1] * scale)
-            th = int(template.shape[0] * scale)
+        gray_tpl = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
-            if th >= sh or tw >= sw or th < 15 or tw < 15:
+        # เทียบสเกลขนาดจริง ไม่ย่อจนเพี้ยน
+        for scale in [0.6, 0.8, 1.0, 1.2]:
+            tw = int(gray_tpl.shape[1] * scale)
+            th = int(gray_tpl.shape[0] * scale)
+
+            if th >= sh or tw >= sw or th < 25 or tw < 25:
                 continue
 
-            resized_tpl = cv2.resize(template, (tw, th))
-            res = cv2.matchTemplate(target_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
+            resized_tpl = cv2.resize(gray_tpl, (tw, th))
+            res = cv2.matchTemplate(gray_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-            if max_val >= 0.45 and max_val > best_match_val:
+            # ยกระดับเกณฑ์เป็น 0.52 ป้องกันการตรวจจับเพี้ยน
+            if max_val >= 0.52 and max_val > best_match_val:
                 best_match_val = max_val
                 best_x = 80 + max_loc[0] + (tw // 2)
                 best_h = th
                 best_area = tw * th
-                matched_filename = f"{fname} (สเกล {scale:.1f}x, มั่นใจ {max_val:.2f})"
+                matched_filename = f"{fname} ({max_val:.2f})"
 
-    if best_match_val >= 0.45:
+    if best_match_val >= 0.52:
         return True, matched_filename, best_x, best_area, best_h
 
     return False, "ไม่พบ", 0, 0, 0
@@ -386,10 +390,10 @@ def main():
                 walk_direction(0, duration_ms=400)
                 time.sleep(0.1)
 
-        # 4. ทดสอบฟันเพื่อเช็กชื่อ: ตี 1 ครั้ง ถ้าไม่มีชื่อเดินชนเข้าไปอีก ตีครบ 3 ครั้งไม่มีชื่อให้หยุดทันที!
+        # 4. ทดสอบฟันเพื่อเช็กชื่อ: ตีครบ 3 ครั้งแล้วไม่มีชื่อต้นไม้นั้นขึ้นมา สั่งหยุดทันที
         name_verified = False
         for verify_attempt in range(1, 4):
-            print(f"\n[🪓] ทดสอบกดตีครั้งที่ {verify_attempt}/3 เพื่อเช็กป้ายชื่อเป้าหมาย...")
+            print(f"\n[🪓] ทดสอบกดตีครั้งที่ {verify_attempt}/3 เพื่อเช็กป้ายชื่อต้นไม้...")
             tap(1100, 530)
             time.sleep(0.7)
 
@@ -397,19 +401,19 @@ def main():
             name_matched, name_detail = check_target_name_match(target_scr)
             print(f"[*] ผลตรวจป้ายชื่อ: {name_detail}")
 
-            if name_matched:
+            if name_matched and "ไม่พบ" not in name_detail and "ไม่มี" not in name_detail:
                 name_verified = True
                 break
             else:
                 if verify_attempt < 3:
-                    print("[?] ไม่พบชื่อเป้าหมาย (ขวานฟันลม) -> ขยับเดินชนอัดเข้าไปอีก 1 ก้าว...")
-                    walk_direction(0, duration_ms=500)
-                    time.sleep(0.3)
+                    print("[?] ยังไม่ขึ้นชื่อต้นไม้ -> ขยับเดินชนเข้าหาอีก 1 ก้าว...")
+                    walk_direction(0, duration_ms=450)
+                    time.sleep(0.2)
 
-        # ถ้าตีครบ 3 ครั้งแล้วไม่มีชื่อ สั่งหยุดทำงานทันที
+        # เงื่อนไข: ตีครบ 3 ครั้งแล้วไม่มีชื่อต้นไม้นั้นขึ้นมา ให้หยุดการทำงานทันที
         if not name_verified:
             print("\n" + "=" * 60)
-            print("[!] ล้มเหลว: ตีครบ 3 ครั้งแล้วไม่มีชื่อขึ้นมา (ตีอากาศ) -> สั่งหยุดการทำงานทันที")
+            print("[!] ล้มเหลว: ตีครบ 3 ครั้งแล้วไม่มีชื่อต้นไม้ขึ้นมา -> สั่งหยุดการทำงานทันที")
             print("=" * 60)
             return
 
