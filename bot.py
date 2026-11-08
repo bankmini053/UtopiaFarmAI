@@ -562,24 +562,23 @@ def main():
         reached_close = False
 
         for step in range(30):
+                for step in range(30):
             curr_scr = get_screen()
 
-            # หากขึ้นปุ่มรูปมือระหว่างเดิน แสดงว่าประชิดเป้าหมายแล้ว
+            # หากขึ้นปุ่มมือระหว่างเดิน แสดงว่าประชิดเป้าหมายแล้ว
             if check_pickup_hand(curr_scr)[0]:
                 print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
-            
+
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-           
-                        if found_step:
+
+            if found_step:
                 ang = pixel_to_angle(cur_x)
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
                     curr_scr = get_screen()
                     found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-
-                walk_deg, direction_label = calculate_walk_angle(cur_x)
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - (SCREEN_W // 2)
@@ -595,6 +594,7 @@ def main():
 
                 walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
+
 
             else:
                 print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
