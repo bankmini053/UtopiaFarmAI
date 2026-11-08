@@ -74,20 +74,57 @@ def match_texture(target_img, icon_filename, threshold=0.48):
 
 
 def optical_zoom_analysis(screen, target_x, target_y=260):
-    """ระบบ Digital Zoom ซูมสายตาบอทเพื่อระบุชนิดและชื่อไฟล์เป้าหมายโดยไม่ขยับจอ"""
+    """
+    ระบบ Digital Zoom วิเคราะห์ลวดลายและเฉดสีต้นไม้
+    พร้อมคำนวณเลือก 'ต้นไม้ที่ใหญ่ที่สุด' (ใกล้ตัวละครที่สุด) เป็นเป้าหมายหลัก
+    คืนค่า: (พบหรือไม่, ชนิดต้นไม้, ชื่อไฟล์, ข้อความผลลัพธ์, พิกัด X ของต้นที่ใหญ่สุด)
+    """
     if screen is None:
-        return False, "ไม่ทราบ", "ไม่มี", "ไม่พบภาพ"
+        return False, "ไม่ทราบ", "ไม่มี", "ไม่พบภาพ", target_x
 
     h, w = screen.shape[:2]
+    
+    # 1. ค้นหาต้นไม้ทุกต้นบนจอเพื่อเลือกต้นที่ขนาดใหญ่ที่สุด (ใกล้ตัวละครที่สุด)
+    target_roi = screen[40:540, 80:1200]
+    gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
+    tree_files = ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png", "tree_rubber.png"]
+
+    best_area = 0
+    best_target_x = target_x
+
+    for fname in tree_files:
+        icon_path = os.path.join(ICONS_DIR, fname)
+        if not os.path.exists(icon_path):
+            continue
+        template = cv2.imread(icon_path)
+        if template is None:
+            continue
+
+        gray_tpl = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        for scale in [0.6, 0.9, 1.2, 1.5]:
+            tw = int(gray_tpl.shape[1] * scale)
+            th = int(gray_tpl.shape[0] * scale)
+            if th >= target_roi.shape[0] or tw >= target_roi.shape[1] or th < 25 or tw < 25:
+                continue
+
+            res = cv2.matchTemplate(gray_roi, cv2.resize(gray_tpl, (tw, th)), cv2.TM_CCOEFF_NORMED)
+            locs = np.where(res >= 0.46)
+            for pt in zip(*locs[::-1]):
+                area = tw * th
+                if area > best_area:
+                    best_area = area
+                    best_target_x = 80 + pt[0] + (tw // 2)
+
+    # 2. ทำ Digital Optical Zoom เจาะจงเฉพาะตำแหน่งต้นที่ใหญ่ที่สุด
     box_w, box_h = 320, 360
-    x1 = max(0, target_x - (box_w // 2))
-    x2 = min(w, target_x + (box_w // 2))
+    x1 = max(0, best_target_x - (box_w // 2))
+    x2 = min(w, best_target_x + (box_w // 2))
     y1 = max(40, target_y - (box_h // 2))
     y2 = min(h - 80, target_y + (box_h // 2))
 
     cropped_view = screen[y1:y2, x1:x2]
     if cropped_view.size == 0:
-        return False, "ไม่ทราบ", "ไม่มี", "พิกัดหลุดขอบจอ"
+        return False, "ไม่ทราบ", "ไม่มี", "พิกัดหลุดขอบจอ", best_target_x
 
     lab = cv2.cvtColor(cropped_view, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -109,9 +146,16 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
             matched, conf = match_texture(scaled_img, icon_fname, threshold=0.46)
             if matched:
                 detail = f"ซูม {sc:.1f}x พบลวดลายตรงกับ '{icon_fname}' (ความแม่นยำ: {conf:.2f})"
-                return True, tree_name, icon_fname, detail
+                return True, tree_name, icon_fname, detail, best_target_x
 
-    return False, "ไม่ทราบ", "ไม่มี", "ลวดลายไม่ตรงกับไฟล์ภาพต้นแบบใน icons"
+    # ตรวจสอบเฉดสีลำต้นสำรองผ่านเลนส์ซูม
+    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([5, 30, 25]), np.array([28, 220, 160]))
+    if np.sum(mask > 0) > 2200:
+        return True, "ต้นไม้ทั่วไป", "HSV_Bark_Mask", "เฉดสีลำต้นไม้ตรงตาม icons", best_target_x
+
+    return False, "ไม่ทราบ", "ไม่มี", "ลวดลายไม่ตรงกับไฟล์ภาพต้นแบบใน icons", best_target_x
+
 
 
 def check_pickup_hand(screen):
