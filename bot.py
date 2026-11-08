@@ -569,14 +569,17 @@ def main():
                 print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
-
+            
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-            if found_step:
+           
+                        if found_step:
                 ang = pixel_to_angle(cur_x)
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
                     curr_scr = get_screen()
-                  found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                    found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+
+                walk_deg, direction_label = calculate_walk_angle(cur_x)
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - (SCREEN_W // 2)
