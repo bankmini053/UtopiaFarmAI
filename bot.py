@@ -253,11 +253,13 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
-    """ตรวจสอบชื่อเป้าหมายและแถบเลือด"""
+    """ตรวจสอบชื่อเป้าหมายจาก icons: ต้องตรงกับ tree_rubber.png หรือ name_coconut.png เท่านั้น"""
     if screen is None:
         return False, "ไม่พบชื่อ"
 
-    for r_name in ["tree_rubber.png", "tree_rubber2.png", "tree_hp_empty.png"]:
+    target_names = ["tree_rubber.png", "name_coconut.png"]
+
+    for r_name in target_names:
         icon_path = os.path.join(ICONS_DIR, r_name)
         if os.path.exists(icon_path):
             tpl = cv2.imread(icon_path)
@@ -267,8 +269,9 @@ def check_target_name_match(screen):
                     res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
                     _, val, _, _ = cv2.minMaxLoc(res)
                     if val >= 0.55:
-                        return True, f"ป้ายชื่อตรง {r_name} ({val:.2f})"
+                        return True, f"ป้ายชื่อตรงกับ {r_name} ({val:.2f})"
 
+    # สำรอง: ตรวจแถบเลือดกรณีป้ายชื่อจาง
     bar_roi = screen[70:220, 420:860]
     hsv = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2HSV)
     mask_red = cv2.bitwise_or(
@@ -278,18 +281,8 @@ def check_target_name_match(screen):
     if np.sum(mask_red > 0) > 55:
         return True, "พบแถบเลือดเป้าหมาย"
 
-    gray = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
-    text = pytesseract.image_to_string(thresh, lang="eng+tha", config=r"--psm 7").strip()
-    if any(k in text.lower() for k in ["rubber", "tree", "palm", "coconut", "ยาง", "ต้นไม้"]):
-        return True, f"OCR พบชื่อ: '{text}'"
+    return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
 
-    return False, text if text else "ไม่มีชื่อ"
-
-
-JOY_CENTER_X = 250
-JOY_CENTER_Y = 530
-JOY_RADIUS = 145
 
 
 def walk_direction(deg=0, duration_ms=450):
