@@ -440,60 +440,54 @@ def main():
         time.sleep(1.2)
 
 
-                # =========================================================================
-        # ขั้นตอนที่ 3: เดินเข้าหาแบบ Real-time (ปรับให้เดินประชิดชนติดเนื้อไม้จริง)
         # =========================================================================
-        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมาย (ปรับให้เดินชนแนบชิดตัวละครที่สุด)...")
+        # ขั้นตอนที่ 3: เดินเข้าหา และก้มหน้าจอลงพื้นวัดระยะชิดหัวตัวละคร
+        # =========================================================================
+        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมาย (ใช้เฉพาะเฉดสีเปลือกไม้)...")
         reached_close = False
-        last_seen_h = 0
 
-        for step in range(30):
+        for step in range(20):
             curr_scr = get_screen()
 
-            # ตรวจจับปุ่มรูปมือ ถ้าขึ้นมาแสดงว่าชิดติดต้นไม้แล้วแน่นอน
             if check_pickup_hand(curr_scr)[0]:
-                print(f"\n[🎯] ถึงระยะประชิดตัวละครแล้ว (พบปุ่มเก็บของ)!")
+                print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ชิดติดเนื้อไม้ 100%!")
                 reached_close = True
                 break
 
             found_step, _, cur_x, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                last_seen_h = cur_h
                 ang = pixel_to_angle(cur_x)
-
                 if abs(ang) > TURN_THRESHOLD_DEG:
-                    print(f"[*] ก้าวที่ {step + 1} | เป้าเบี่ยง {ang:+.1f}° -> หมุนกล้องเข้าหา")
                     turn_camera(ang)
                     curr_scr = get_screen()
-                    found_step, _, cur_x, cur_area, cur_h = detect_target_tree(curr_scr)
-                    if not found_step:
-                        continue
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px")
 
-                # ปรับเงื่อนไขหยุดให้ชิดติดตัวละครจริง: ต้องสูงเกิน 380px ขึ้นไป และเดินมาแล้วไม่ต่ำกว่า 4 ก้าว
-                if cur_h >= 380 and step >= 4:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่แนบชิดตัวละครแล้ว! (สูง: {cur_h}px) -> สั่งหยุดเดิน")
-                    reached_close = True
-                    break
+                if cur_h >= 240 or step >= 5:
+                    print("[👀] เข้าใกล้ระยะโคนต้น -> กำลังก้มหน้าจอลงพื้นจนสุดเพื่อวัดระยะชิดหัว...")
+                    pitch_camera_down()
+                    
+                    td_scr = get_screen()
+                    is_snapped, dist = check_topdown_proximity(td_scr)
+                    print(f"[*] ระยะห่างโคนต้นไม้จากหัวตัวละคร: {dist} px")
 
-                # เพิ่มระยะเวลาดันจอยให้เดินพุ่งเข้าหาเต็มฝีเท้า (480ms - 520ms)
-                step_duration = 440 if cur_h >= 280 else 520
-                walk_direction(walk_deg, duration_ms=step_duration)
-                time.sleep(0.08)
-
+                    if is_snapped or dist <= 40:
+                        print("\n[🎯] ลำต้นแนบชิดติดหัวตัวละครแล้ว (ระยะตัดสมบูรณ์)!")
+                        reached_close = True
+                        break
+                    else:
+                        print("[+] เดินดันชนอัดเข้าไปอีกนิด...")
+                        walk_direction(0, duration_ms=380)
+                        time.sleep(0.1)
+                else:
+                    walk_direction(walk_deg, duration_ms=480)
+                    time.sleep(0.1)
             else:
-                # กรณีเดินเบียดชนจนลำต้นล้นขอบจอไปแล้ว (ความสูงเคยเกิน 300px มาก่อน)
-                if last_seen_h >= 300:
-                    print(f"\n[🎯] เดินชนจนต้นไม้ล้นเต็มขอบจอแล้ว! -> สั่งหยุดเดินทันที")
-                    reached_close = True
-                    break
+                walk_direction(0, duration_ms=350)
+                time.sleep(0.1)
 
-                # ถ้ายังไม่ถึงแต่หลุดเฟรม ให้ก้าวตรงชนเข้าไปต่อ
-                walk_direction(0, duration_ms=400)
-                time.sleep(0.08)
 
 
               # =========================================================================
