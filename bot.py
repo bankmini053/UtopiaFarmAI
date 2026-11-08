@@ -390,20 +390,41 @@ def main():
             print("=" * 55)
             return
 
-        # ขั้นตอนที่ 2: ล็อกหน้าจอนิ่ง แล้ววิเคราะห์ต้นที่ใหญ่ที่สุด
-        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
+                # =========================================================================
+        # ขั้นตอนที่ 2: ล็อกจอนิ่งสนิท -> ตีกรอบสีเขียวล็อกเป้าหมายต้นที่เลือก (Lock-On)
+        # =========================================================================
+        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท ไม่ขยับมุมมอง...")
         time.sleep(1.0)
-        print("[🔬] เปิดโหมดซูมวิเคราะห์ เลือกต้นที่ใหญ่ที่สุด (ใกล้ตัวละครที่สุด)...")
+        print("[🔬] ตรวจสอบและสร้างกรอบสี่เหลี่ยมสีเขียวล็อกเป้าหมายต้นไม้ที่ใกล้ที่สุด...")
 
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x = optical_zoom_analysis(zoom_scr, target_x)
         target_x = nearest_x
 
+        # สร้างภาพตีกรอบสีเขียวล็อกเป้าหมาย (Lock-On Box) บันทึกไว้ตรวจสอบ
+        if is_real_tree and zoom_scr is not None:
+            locked_img = zoom_scr.copy()
+            box_w, box_h = 160, 200
+            lx1 = max(0, target_x - (box_w // 2))
+            lx2 = min(SCREEN_W, target_x + (box_w // 2))
+            ly1 = max(40, 260 - (box_h // 2))
+            ly2 = min(620, 260 + (box_h // 2))
+
+            # วาดกรอบสี่เหลี่ยมสีเขียวหนา 3px และจุดกึ่งกลางล็อกเป้าหมาย
+            cv2.rectangle(locked_img, (lx1, ly1), (lx2, ly2), (0, 255, 0), 3)
+            cv2.circle(locked_img, (target_x, 260), 6, (0, 0, 255), -1)
+            cv2.putText(locked_img, f"LOCKED: {tree_type_name}", (lx1, max(30, ly1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            # บันทึกภาพที่บอทล็อกเป้าหมายไว้
+            cv2.imwrite("/data/local/tmp/bot_locked_target.png", locked_img)
+            print("[🎯] ตีกรอบสีเขียวล็อกเป้าหมายเรียบร้อย! (เซฟภาพที่ /data/local/tmp/bot_locked_target.png)")
+
         print("\n" + "=" * 50)
         print(f"[🔍] ผลการวิเคราะห์ผ่านเลนส์ซูม:")
         print(f"  - ชนิดเป้าหมาย : {tree_type_name}")
         print(f"  - ไฟล์ที่ตรงกัน : {matched_file}")
-        print(f"  - พิกัดต้นใกล้สุด: X={target_x}")
+        print(f"  - พิกัดล็อกเป้า: X={target_x}")
         print(f"  - รายละเอียด  : {zoom_detail}")
         print("=" * 50)
 
@@ -412,8 +433,9 @@ def main():
             rotate_view_right(dist=180)
             continue
 
-        print(f"[✓] เลือกต้นไม้ขนาดใหญ่สุดเรียบร้อย ({tree_type_name})! เตรียมเดินเข้าหา...")
+        print(f"[✓] ยืนยันกรอบเป้าหมาย ({tree_type_name})! เตรียมเดินเข้าหา...")
         time.sleep(1.0)
+
 
         # ขั้นตอนที่ 3: เดินเข้าหา และก้มหน้าจอลงพื้นวัดระยะชิดหัว
         print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาเป้าหมาย (ใช้เฉพาะเฉดสีเปลือกไม้)...")
