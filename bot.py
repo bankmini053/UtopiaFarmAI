@@ -367,56 +367,55 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
+def check_target_name_match(screen):
     """
-    ข้อ 4:
-    - มีเลือดสีแดง = ต้นไม้ยังมีชีวิต พร้อมฟันต่อ
-    - ไม่มีเลือดสีแดง = ต้นไม้ล้มแล้ว / ตายแล้ว หรือพร้อมเก็บ
-    - ปริ้นต์ข้อความและค่าที่อ่านได้ทั้งหมดออกจอ
+    ข้อ 4: ตรวจสอบอ้างอิงไฟล์จากโฟลเดอร์ icons/ โดยตรง
+    1. Name_Rubber_tree.png = มีชื่อ + มีหลอดเลือด -> พร้อมฟันต่อ
+    2. No_Name_Rubber_tree.png = มีชื่อ + ไม่มีหลอดเลือด -> ต้นไม้ล้ม/เสร็จแล้ว พร้อมเก็บ
     """
     if screen is None:
         return False, False, "ไม่พบภาพหน้าจอ"
 
-    # โซนป้ายชื่อและหลอดเลือดมุมขวาบน
-    roi = screen[120:340, 780:1260]
+    # กำหนดพื้นที่ป้ายชื่อและหลอดเลือดมุมขวาบนของจอ
+    roi = screen[100:360, 750:1270]
 
-    # 1. ตรวจจับเฉดสีแดงของหลอดเลือด (HSV)
+    # --- ตรวจสอบไฟล์ที่ 1: Name_Rubber_tree.png (มีชื่อ + มีเลือด) ---
+    f_has_blood = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
+    val_has_blood = 0.0
+    if os.path.exists(f_has_blood):
+        tpl1 = cv2.imread(f_has_blood)
+        if tpl1 is not None and roi.shape[0] >= tpl1.shape[0] and roi.shape[1] >= tpl1.shape[1]:
+            res1 = cv2.matchTemplate(roi, tpl1, cv2.TM_CCOEFF_NORMED)
+            _, val_has_blood, _, _ = cv2.minMaxLoc(res1)
+            if val_has_blood >= 0.45:
+                return True, False, f"พบ Name_Rubber_tree.png ({val_has_blood:.2f}) -> มีเลือด พร้อมฟันต่อ"
+
+    # --- ตรวจสอบไฟล์ที่ 2: No_Name_Rubber_tree.png (มีชื่อ + ไม่มีเลือด) ---
+    f_no_blood = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
+    val_no_blood = 0.0
+    if os.path.exists(f_no_blood):
+        tpl2 = cv2.imread(f_no_blood)
+        if tpl2 is not None and roi.shape[0] >= tpl2.shape[0] and roi.shape[1] >= tpl2.shape[1]:
+            res2 = cv2.matchTemplate(roi, tpl2, cv2.TM_CCOEFF_NORMED)
+            _, val_no_blood, _, _ = cv2.minMaxLoc(res2)
+            if val_no_blood >= 0.45:
+                return False, True, f"พบ No_Name_Rubber_tree.png ({val_no_blood:.2f}) -> ต้นไม้ล้มแล้ว พร้อมเก็บ"
+
+    # เช็กเสริมด้วย HSV แถบสีแดงและ OCR
     hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
     mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
     red_count = int(np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0))
-    has_blood = red_count > 45
 
-    # 2. ตรวจสอบไฟล์ป้ายชื่อ Name_Rubber_tree.png
-    name_matched = False
-    name_icon = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
-    icon_val = 0.0
-    if os.path.exists(name_icon):
-        tpl = cv2.imread(name_icon)
-        if tpl is not None and roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
-            res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
-            _, icon_val, _, _ = cv2.minMaxLoc(res)
-            if icon_val >= 0.40:
-                name_matched = True
-
-    # 3. OCR อ่านค่าตัวหนังสือจริงทั้งหมดที่จับได้
     lower_white = np.array([0, 0, 185])
     upper_white = np.array([180, 50, 255])
     mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
     raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip()
-    clean_ocr = "".join(ch for ch in raw_ocr if ch.isalnum() or ch in " _-")
 
-    status_detail = f"ข้อความ OCR: '{raw_ocr}' (คลีน: '{clean_ocr}') | เลือดแดง: {red_count}px | ไอคอน: {icon_val:.2f}"
+    if red_count > 60:
+        return True, False, f"พบแถบเลือดแดง ({red_count}px, OCR: '{raw_ocr}') -> พร้อมฟันต่อ"
 
-    # เงื่อนไข: ถ้าไม่มีเลือดแดงเลย แสดงว่าต้นไม้ล้มแล้ว/ไม่มีเป้าหมาย
-    if not has_blood:
-        return False, True, f"ไม่มีหลอดเลือดแดง (ต้นไม้ล้ม/ตายแล้ว) -> {status_detail}"
-
-    # มีเลือดแดง + ตรวจเจอชื่อหรือไอคอน
-    if name_matched or any(k in raw_ocr.lower() for k in ["rubber", "tree", "ยาง", "พารา"]):
-        return True, False, f"พบต้นไม้และมีเลือดสมบูรณ์ -> {status_detail}"
-
-    # มีเลือดแดงแต่ชื่อเพี้ยน ให้ผ่านเพราะมีเลือดเป็นตัวการันตีว่าตีโดนต้นไม้
-    return True, False, f"พบหลอดเลือดแดงพร้อมฟัน (ชื่อไม่ชัด) -> {status_detail}"
+    return False, False, f"เคาะไม่โดน/ไม่พบป้าย (มีเลือด: {val_has_blood:.2f}, ไร้เลือด: {val_no_blood:.2f}, OCR: '{raw_ocr}')"
 
 
 def walk_direction(deg=0, duration_ms=480):
@@ -597,31 +596,32 @@ def main():
                     print("=" * 60)
                     return
 
-        # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
+                # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
         print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
-        walk_direction(0, duration_ms=280)  # ดันตัวเข้าหาต้นไม้กันตีลม
-        time.sleep(0.2)
+        walk_direction(0, duration_ms=300)  # ดันตัวเข้าหาต้นไม้
+        time.sleep(0.15)
         tap(1100, 530)  # แตะปุ่มตี
-        time.sleep(0.8)
+        time.sleep(1.0)  # รอแอนิเมชันป้ายชื่อและหลอดเลือดขึ้นจอ
 
         target_scr = get_screen()
         is_target_ready, is_tree_dead, result_log = check_target_name_match(target_scr)
         print(f"[*] ผลการสแกน: {result_log}")
 
-        # ถ้าไม่มีเลือด = ต้นไม้ล้มหรือเป็นต้นที่ตายแล้ว ให้ข้ามไปเก็บของทันที
+        # ถ้าตรงกับ No_Name_Rubber_tree.png = ต้นไม้ล้มหรือเสร็จแล้ว
         if is_tree_dead:
-            print("[✓] ต้นไม้ไม่มีเลือดแล้ว (ล้มหรือพร้อมเก็บ) -> ข้ามไปตรวจปุ่มมือทันที")
+            print("[✓] พบ No_Name_Rubber_tree -> ต้นไม้ล้มสมบูรณ์ ข้ามไปตรวจปุ่มมือทันที")
         elif not is_target_ready:
             if not retry_mode:
-                print("\n[⚠️] เคาะตีแล้วไม่พบป้ายชื่อหรือหลอดเลือด -> ขยับหมุนหามุมใหม่ 1 ครั้ง...")
+                print("\n[⚠️] เคาะตีแล้วไม่ตรงทั้งสองไฟล์ (อาจตีไม่โดน) -> หมุนขยับมุมเคาะซ้ำ 1 ครั้ง...")
                 retry_mode = True
-                rotate_view_right(dist=160)
+                rotate_view_right(dist=140)
                 continue
             else:
-                print("\n[!] ล้มเหลว: เคาะรอบที่ 2 แล้วยังไม่พบเลือด -> สั่งหยุดทำงาน")
+                print("\n[!] ล้มเหลว: ลองเคาะซ้ำแล้วยังไม่พบป้ายชื่อต้นไม้ -> สั่งหยุดทำงาน")
                 return
 
         retry_mode = False
+
 
         # ขั้นตอนที่ 5: ฟันต่อเนื่องจนเจอปุ่มรูปมือ -> กดปุ่มมือ 2 ครั้ง
         print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! เริ่มต้นฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
