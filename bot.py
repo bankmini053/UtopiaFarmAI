@@ -309,6 +309,62 @@ def check_axe_status(screen):
     return True
 
 
+def detect_target_tree(screen):
+    if screen is None:
+        return False, "ไม่พบ", 0, 0, 0, 0
+
+    target_roi = screen[40:620, 80:1200]
+    sh, sw = target_roi.shape[:2]
+    gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
+
+    tree_files = [
+        "Rubber_tree.png",
+        "Rubber_tree2.png",
+        "Rubber_tree3.png",
+        "Rubber_tree4.png"
+    ]
+
+    best_match_val = -1
+    best_x = 0
+    best_y = 0
+    best_h = 0
+    best_area = 0
+    matched_filename = ""
+
+    for fname in tree_files:
+        icon_path = os.path.join(ICONS_DIR, fname)
+        if not os.path.exists(icon_path):
+            continue
+
+        template = cv2.imread(icon_path, cv2.IMREAD_GRAYSCALE)
+        if template is None:
+            continue
+
+        for scale in [0.5, 0.7, 1.0, 1.3, 1.6]:
+            tw = int(template.shape[1] * scale)
+            th = int(template.shape[0] * scale)
+
+            if th >= sh or tw >= sw or th < 25 or tw < 25:
+                continue
+
+            resized_tpl = cv2.resize(template, (tw, th))
+            res = cv2.matchTemplate(gray_roi, resized_tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+            if max_val >= 0.46 and max_val > best_match_val:
+                best_match_val = max_val
+                best_x = 80 + max_loc[0] + (tw // 2)
+                best_y = 40 + max_loc[1] + (th // 2)
+                best_h = th
+                best_area = tw * th
+                matched_filename = f"{fname} ({max_val:.2f})"
+
+    if best_match_val >= 0.46:
+        return True, matched_filename, best_x, best_y, best_area, best_h
+
+    return False, "ไม่พบ", 0, 0, 0, 0
+
+
 def check_target_name_match(screen):
     """
     ข้อ 4: บังคับตรวจชื่อต้นไม้เหนือหลอดเลือด
@@ -352,7 +408,7 @@ def check_target_name_match(screen):
     mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
     raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip().lower()
 
-    # ดักชื่อต้นไม้อื่นที่ไม่ใช่ต้นยางพารา (เช่น Fern Tree ในภาพ)
+    # ดักชื่อต้นไม้อื่นที่ไม่ใช่ต้นยางพารา (เช่น Fern Tree)
     if any(k in raw_ocr for k in ["fern", "เฟิร์น", "stone", "หิน"]):
         return False, False, f"พบต้นไม้อื่น ({raw_ocr}) ไม่ใช่ต้นยางพารา -> หมุนหาใหม่"
 
@@ -367,7 +423,6 @@ def check_target_name_match(screen):
         return True, False, f"ยืนยันต้นยางพาราถูกต้องและมีเลือด (ไอคอน: {val_has_blood:.2f}, เลือด: {red_count}px, OCR: '{raw_ocr}')"
 
     return False, False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่ใช่ต้นยาง (ไอคอน: {val_has_blood:.2f}, OCR: '{raw_ocr}')"
-
 
 
 def detect_target_tree(screen):
