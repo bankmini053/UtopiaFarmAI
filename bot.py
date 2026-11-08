@@ -358,21 +358,26 @@ def main():
         round_count += 1
         print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
 
-        # ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้
-        print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้...")
+                # =========================================================================
+        # ข้อ 1: หมุนหน้าจอตามคำสั่งแรก เพื่อสแกนหาต้นไม้
+        # =========================================================================
+        print("\n[1] ข้อ 1: หมุนหน้าจอกวาดสายตา 360 องศาเพื่อค้นหาต้นไม้...")
         candidate_found = False
         target_x = 0
+        target_y = 0
 
         for step in range(8):
             scr = get_screen()
             found, src, cx, cy, area, h = detect_target_tree(scr)
             if found:
+                # ข้อ 2: เมื่อหมุนแล้วเจอต้นไม้ ให้หยุดทันที แล้ววิเคราะห์พิกัดในจอว่าเท่าไหร่
                 candidate_found = True
                 target_x = cx
-                print(f"\n[🌲] พบเป้าหมายที่มุม {step + 1}/8! [{src}] (พิกัดสด: X={cx}, Y={cy}, สูง={h}px)")
+                target_y = cy
+                print(f"\n[🛑] ข้อ 2: เจอต้นไม้แล้วสั่งหยุดทันที! วิเคราะห์พิกัดเป้าหมายในจอได้ที่: X={target_x}, Y={target_y} (สูง={h}px, อ้างอิง={src})")
                 break
             else:
-                print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
+                print(f"[🔄] สแกนมุม {step + 1}/8 (ไม่พบ) -> หมุนหน้าจอต่อ...")
                 rotate_view_right(dist=180)
 
         if not candidate_found:
@@ -381,140 +386,73 @@ def main():
             print("=" * 55)
             return
 
-        # ขั้นตอนที่ 2: ตีกรอบสีเขียวครอบต้นไม้ที่ใหญ่ที่สุด
-        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
-        time.sleep(0.8)
+        # ตรวจสอบยืนยันลวดลายและตีกรอบสีเขียว
+        time.sleep(0.5)
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x, tree_box = optical_zoom_analysis(zoom_scr, target_x)
         target_x = nearest_x
 
-        if is_real_tree and zoom_scr is not None:
-            bx, by, bw, bh = tree_box
-            locked_img = zoom_scr.copy()
-            cv2.rectangle(locked_img, (bx, by), (bx + bw, by + bh), (0, 255, 0), 4)
-            cv2.circle(locked_img, (target_x, by + (bh // 2)), 6, (0, 0, 255), -1)
-            cv2.putText(locked_img, f"TARGET LOCKED: {tree_type_name}", (bx, max(30, by - 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-            cv2.imwrite(LOCKED_IMG_PATH, locked_img)
-            print(f"[🎯] ยืนยันเป้าหมาย! ตีกรอบสีเขียวที่ X={bx}, Y={by} (กว้าง {bw}px, สูง {bh}px)")
-
         if not is_real_tree:
-            print("[⚠️] ปฏิเสธเป้าหมาย: ไม่ตรงกับ icons -> หมุนค้นหาต่อ")
+            print("[⚠️] ปฏิเสธเป้าหมาย: ลวดลายไม่ตรงกับ icons -> หมุนค้นหาต่อ")
             rotate_view_right(dist=180)
             continue
 
-        # ขั้นตอนที่ 3: ปรับศูนย์เล็งเข้ากึ่งกลางจอ (640, 360) แล้วเดินยาว
-        print("\n[3] ขั้นตอนที่ 3: ระบบปรับศูนย์เล็งเข้ากึ่งกลางจอ (640, 360) แล้วเดินยาว...")
+        # =========================================================================
+        # ข้อ 3 & 4: หมุนหน้าจอจากพิกัด (X=472, Y=753) ไปยังพิกัดที่คำนวณได้
+        # =========================================================================
+        print(f"\n[3-4] ข้อ 3 & 4: เริ่มต้นรูดหมุนหน้าจอจากพิกัดต้นทาง (472, 753) เล็งไปยังเป้าหมาย (X={target_x}, Y={target_y})...")
+        
+        # คำนวณระยะการเลื่อนหน้าจอจากจุดอ้างอิงกลางจอ (640, 360) ไปยังพิกัดต้นไม้
+        diff_x = target_x - 640
+        diff_y = target_y - 360
+
+        # ปรับระยะเลื่อนแบบพอดี (Scaled Swipe)
+        shift_x = int(np.clip(diff_x * 0.70, -320, 320))
+        shift_y = int(np.clip(diff_y * 0.60, -220, 220))
+
+        start_x, start_y = 472, 753
+        end_x = start_x - shift_x
+        end_y = start_y - shift_y
+
+        # รูดหน้าจอจากจุด (472, 753) ไปยังจุดที่คำนวณได้
+        swipe_screen(start_x, start_y, end_x, end_y, duration=240)
+        time.sleep(0.4)
+        print(f"[✓] หันหน้าจอจาก ({start_x}, {start_y}) ไปยัง ({end_x}, {end_y}) เรียบร้อยแล้ว")
+
+        # =========================================================================
+        # ข้อ 5: เมื่อหันจอเรียบร้อยแล้ว ให้ทำการคำนวณการเดินไป
+        # =========================================================================
+        print("\n[5] ข้อ 5: คำนวณทิศทางและระยะการเดินมุ่งหน้าเข้าหาต้นไม้...")
         reached_close = False
 
         for step in range(25):
             curr_scr = get_screen()
 
-            # ตรวจสอบปุ่มรูปมือก่อนทุกครั้ง
+            # ตรวจสอบปุ่มรูปมือ หากถึงระยะเก็บเกี่ยวแล้วให้หยุดเดินทันที
             if check_pickup_hand(curr_scr)[0]:
-                print("\n[🎯] ตรวจพบปุ่มรูปมือขึ้นมาแล้ว -> ถึงระยะเก็บเกี่ยวเรียบร้อย!")
+                print("\n[🎯] ตรวจพบปุ่มรูปมือขึ้นมาแล้ว -> ถึงระยะประชิดเรียบร้อย!")
                 reached_close = True
                 break
 
-            # ข้อ 1: หยุดเพื่อวิเคราะห์พิกัดตำแหน่งของต้นไม้ในจอ
             found_step, src, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                offset_x = cur_x - 640
-                offset_y = cur_y - 360
-
-                # ข้อ 4: ถ้าหลุดกึ่งกลางจอมากเกินไป (> 260px) ให้ถอยหลัง 1 ก้าวแล้วเริ่มตั้งลำใหม่
-                if abs(offset_x) > 260:
-                    print(f"[⚠️] เป้าหมายหลุดกึ่งกลางจอมากเกินไป (เบี่ยง {offset_x:+d}px) -> ถอยหลัง 1 ก้าวเพื่อตั้งลำใหม่...")
-                    step_backward(duration_ms=420)
-                    time.sleep(0.3)
-                    continue
-
-                # ข้อ 2: หมุนปรับหน้าจอให้พิกัดต้นไม้อยู่ใกล้ (640, 360) มากที่สุด
-                if abs(offset_x) > 50 or abs(offset_y) > 50:
-                    cur_x, cur_y = align_camera_to_crosshair(cur_x, cur_y)
-                    curr_scr = get_screen()
-                    _, _, cur_x, cur_y, _, cur_h = detect_target_tree(curr_scr)
-
                 walk_deg, direction_label, _ = calculate_walk_angle(cur_x)
-                print(f"[📍 TARGET LOCKED] ก้าวที่ {step + 1:02d} | พิกัด: ({cur_x:4d}, {cur_y:3d}) | "
-                      f"สูง: {cur_h:3d}px | เดิน: {direction_label}")
+                print(f"[*] กำลังเดินก้าวที่ {step + 1:02d} | ทิศทาง: {direction_label} ({walk_deg:.1f}°) | ลำต้นสูง: {cur_h}px")
 
-                # เงื่อนไขระยะประชิดเนื้อไม้ (เดินอย่างน้อย 4 ก้าว และลำต้นขยายใหญ่เต็มจอ)
-                if step >= 4 and cur_h >= 400:
+                # ถ้าลำต้นขยายใหญ่เต็มสายตา ถือว่าประชิดเนื้อไม้แล้ว
+                if step >= 3 and cur_h >= 400:
                     print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
-                # ข้อ 3: เมื่อเล็งตรงกึ่งกลางจอแล้ว คำนวณการเดินก้าวตรงไปข้างหน้าแบบยาว ๆ (680ms)
-                walk_direction(walk_deg, duration_ms=680)
-                time.sleep(0.12)
+                walk_direction(walk_deg, duration_ms=650)
+                time.sleep(0.1)
             else:
-                print(f"[⚠️] ไม่พบเป้าหมายในระยะมองเห็น -> ถอยหลัง 1 ก้าวเพื่อค้นหาใหม่...")
-                step_backward(duration_ms=380)
-                time.sleep(0.2)
+                # หากเป้าหมายคลาดสายตาชั่วคราว ดันเดินตรงต่อสั้น ๆ
+                walk_direction(0, duration_ms=380)
+                time.sleep(0.1)
 
-        # ขั้นตอนที่ 4: ตี 1 ครั้งเพื่อตรวจสอบชื่อ
-        print(f"\n[4] ขั้นตอนที่ 4: กดตี 1 ครั้งเพื่อเช็กชื่อเป้าหมาย ({tree_type_name})...")
-        tap(1100, 530)
-        time.sleep(0.7)
-
-        target_scr = get_screen()
-        name_matched, name_detail = check_target_name_match(target_scr)
-        print(f"[*] ผลตรวจป้ายชื่อ: {name_detail}")
-
-        if not name_matched:
-            if not retry_mode:
-                print("\n[⚠️] ตี 1 ครั้งแล้วไม่พบชื่อที่ถูกต้อง -> ย้อนกลับไปค้นหาใหม่ (แก้มือ 1 รอบ)...")
-                retry_mode = True
-                rotate_view_right(dist=180)
-                continue
-            else:
-                print("\n" + "=" * 60)
-                print("[!] ล้มเหลว: ย้อนกลับมาตีรอบ 2 แล้วยังไม่พบชื่อ -> สั่งหยุดทำงาน")
-                print("=" * 60)
-                return
-
-        retry_mode = False
-
-        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนเจอปุ่มรูปมือ -> กดปุ่มมือ 2 ครั้ง
-        print(f"\n[5] ขั้นตอนที่ 5: ชื่อถูกต้อง! ฟันต่อเนื่องจนกว่าจะเจอปุ่มรูปมือ...")
-        hits = 0
-        hand_detected = False
-        hx, hy = 0, 0
-
-        while hits < 45:
-            hits += 1
-            tap(1100, 530)
-            time.sleep(0.35)
-
-            if hits % 2 == 0:
-                chk_scr = get_screen()
-                is_hand, hand_x, hand_y, hand_src = check_pickup_hand(chk_scr)
-                if is_hand:
-                    hand_detected = True
-                    hx, hy = hand_x, hand_y
-                    print(f"\n[🖐️] ตรวจพบปุ่มรูปมือ [{hand_src}] หลังตีไป {hits} ครั้ง!")
-                    break
-
-        if not hand_detected:
-            final_chk = get_screen()
-            is_hand, hand_x, hand_y, hand_src = check_pickup_hand(final_chk)
-            if is_hand:
-                hand_detected = True
-                hx, hy = hand_x, hand_y
-
-        if not hand_detected:
-            print("\n" + "=" * 60)
-            print("[!] ล้มเหลว: ฟันครบกำหนดแล้วแต่ไม่พบปุ่มรูปมือ (pickup_hand.png) -> หยุดทำงาน")
-            print("=" * 60)
-            return
-
-        print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
-        tap(hx, hy)
-        time.sleep(0.3)
-        tap(hx, hy)
-        time.sleep(0.8)
 
         # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
         print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ต้องมีปุ่มเขียว หรือคำว่า 'Pick All')...")
