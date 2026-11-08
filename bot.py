@@ -208,7 +208,8 @@ def detect_target_tree(screen):
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
-    tree_files = ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png", "tree_rubber.png"]
+    tree_files = ["tree_name1.png", "tree_coconut.png", "tree_coconut2.png"]
+
 
     best_match_val = -1
     best_x = 0
