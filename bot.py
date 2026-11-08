@@ -284,6 +284,40 @@ def check_target_name_match(screen):
         return True, "พบแถบเลือดเป้าหมาย"
 
     return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
+    def pitch_camera_down():
+    """รูดปรับมุมมองกล้องก้มลงพื้นจนสุด (Top-Down View) แบบในคลิป"""
+    cx, cy = 850, 480
+    swipe_screen(cx, cy, cx, cy - 350, duration=300)
+    time.sleep(0.4)
+
+
+def check_topdown_proximity(screen):
+    """
+    เมื่อก้มมองพื้น: คำนวณระยะห่างระหว่างหัวตัวละคร (640, 360) กับโคนต้นไม้ตรงหน้า
+    คืนค่า: (ชิดติดหรือไม่, ระยะห่างพิกเซล)
+    """
+    if screen is None:
+        return False, 999
+
+    roi = screen[180:380, 520:760]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+    lower_bark = np.array([5, 30, 25])
+    upper_bark = np.array([28, 220, 160])
+    mask = cv2.inRange(hsv, lower_bark, upper_bark)
+
+    y_coords, x_coords = np.where(mask > 0)
+    if len(y_coords) == 0:
+        return False, 999
+
+    tree_bottom_y = np.max(y_coords)
+    distance_to_head = 180 - tree_bottom_y
+
+    if distance_to_head <= 40:
+        return True, distance_to_head
+
+    return False, distance_to_head
+
 
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
