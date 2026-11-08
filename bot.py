@@ -281,7 +281,14 @@ def detect_target_tree(screen):
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
 
-    tree_files = ["tree_name1.png", "tree_coconut.png", "tree_coconut2.png"]
+        # เปลี่ยนชุดไฟล์ต้นไม้เป็น 4 ช่วงเวลา เช้า-เย็น
+    tree_files = [
+        "Rubber_tree.png",
+        "Rubber_tree2.png",
+        "Rubber_tree3.png",
+        "Rubber_tree4.png"
+    ]
+
 
     best_match_val = -1
     best_x = 0
