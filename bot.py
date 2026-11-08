@@ -618,25 +618,28 @@ def main():
                     return
 
 
-        # ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อตรวจชื่อ
-        print(f"\n[4] ขั้นตอนที่ 4: ทดสอบกดตี 1 ครั้งเพื่อเช็กชื่อต้นไม้ ({tree_type_name})...")
-        tap(1100, 530)
-        time.sleep(0.7)
+        #         # ขั้นตอนที่ 4: ดันตัวชิดเป้าหมายแล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
+        print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
+        walk_direction(0, duration_ms=280)  # ดันตัวเข้าหาต้นไม้กันตีลม
+        time.sleep(0.2)
+        tap(1100, 530)  # แตะปุ่มตี
+        time.sleep(0.8)
 
         target_scr = get_screen()
-        name_matched, name_detail = check_target_name_match(target_scr)
-        print(f"[*] ผลตรวจป้ายชื่อ: {name_detail}")
+        is_target_ready, is_tree_dead, result_log = check_target_name_match(target_scr)
+        print(f"[*] ผลการสแกน: {result_log}")
 
-        if not name_matched:
+        # ถ้าไม่มีเลือด = ต้นไม้ล้มหรือเป็นต้นที่ตายแล้ว ให้ข้ามไปเก็บของทันที
+        if is_tree_dead:
+            print("[✓] ต้นไม้ไม่มีเลือดแล้ว (ล้มหรือพร้อมเก็บ) -> ข้ามไปตรวจปุ่มมือทันที")
+        elif not is_target_ready:
             if not retry_mode:
-                print("\n[⚠️] ตี 1 ครั้งแล้วไม่พบชื่อที่ถูกต้อง -> ย้อนกลับไปค้นหาใหม่ (แก้มือ 1 รอบ)...")
+                print("\n[⚠️] เคาะตีแล้วไม่พบป้ายชื่อหรือหลอดเลือด -> ขยับหมุนหามุมใหม่ 1 ครั้ง...")
                 retry_mode = True
-                rotate_view_right(dist=180)
+                rotate_view_right(dist=160)
                 continue
             else:
-                print("\n" + "=" * 60)
-                print("[!] ล้มเหลว: วนกลับมาตีรอบที่ 2 แล้วยังไม่มีชื่อขึ้นมา -> สั่งหยุดทำงาน")
-                print("=" * 60)
+                print("\n[!] ล้มเหลว: เคาะรอบที่ 2 แล้วยังไม่พบเลือด -> สั่งหยุดทำงาน")
                 return
 
         retry_mode = False
