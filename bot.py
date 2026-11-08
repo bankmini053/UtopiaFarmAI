@@ -571,30 +571,28 @@ def main():
                 break
 
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
-
             if found_step:
                 ang = pixel_to_angle(cur_x)
                 if abs(ang) > TURN_THRESHOLD_DEG:
                     turn_camera(ang)
                     curr_scr = get_screen()
-                    _, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                    _, _, cur_x, cur_y, cur_h = detect_target_tree(curr_scr)
 
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - (SCREEN_W // 2)
 
-                # รายงานพิกัดและการคำนวณสดทุกก้าวตลอดเวลา
                 print(f"[*] ก้าวที่ {step + 1:02d} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
                       f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px | เดิน: {direction_label}")
- 
-# ปรับจาก 360 เป็น 220
-       if step >= 3 and cur_h >= 220:
-    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
-    reached_close = True
-    break
 
-             
+                # หยุดเดินเมื่อประชิดโคนต้นไม้ (สูงตั้งแต่ 220px ขึ้นไป)
+                if step >= 3 and cur_h >= 220:
+                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ประชิดระยะฟันสมบูรณ์!")
+                    reached_close = True
+                    break
+
                 walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
+
             else:
                 print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
                 target_reacquired = False
