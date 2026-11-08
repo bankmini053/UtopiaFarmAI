@@ -18,9 +18,6 @@ TURN_THRESHOLD_DEG = 22
 TURN_GAIN = 0.8
 CAMERA_PX_PER_DEG = 4.0
 
-# พิกัดปุ่ม Pick All สีเขียว
-PICK_ALL_BTN = (335, 545)
-
 
 def run_cmd(cmd):
     subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
@@ -47,6 +44,7 @@ def get_screen():
 
 
 def match_texture(target_img, icon_filename, threshold=0.48):
+    """จับคู่ลวดลายกับไฟล์ภาพต้นแบบใน icons/"""
     icon_path = os.path.join(ICONS_DIR, icon_filename)
     if not os.path.exists(icon_path):
         return False, 0.0
@@ -72,6 +70,7 @@ def match_texture(target_img, icon_filename, threshold=0.48):
 
 
 def optical_zoom_analysis(screen, target_x, target_y=260):
+    """ซูมสายตาบอท (Digital Zoom) เพื่อระบุชื่อไฟล์และประเภทต้นไม้"""
     if screen is None:
         return False, "ไม่ทราบ", "ไม่มี", "ไม่พบภาพ"
 
@@ -112,16 +111,17 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
 
 
 def check_pickup_hand(screen):
+    """ตรวจจับปุ่ม pickup_hand.png สำหรับเก็บของ"""
     icon_path = os.path.join(ICONS_DIR, "pickup_hand.png")
     if os.path.exists(icon_path):
         tpl = cv2.imread(icon_path)
         if tpl is not None:
-            roi = screen[300:660, 200:1160]
+            roi = screen[300:480, 950:1160]
             if roi.shape[0] > tpl.shape[0] and roi.shape[1] > tpl.shape[1]:
                 res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
                 _, val, _, loc = cv2.minMaxLoc(res)
-                if val >= 0.55:
-                    return True, 200 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
+                if val >= 0.58:
+                    return True, 950 + loc[0] + (tpl.shape[1] // 2), 300 + loc[1] + (tpl.shape[0] // 2), f"pickup_hand ({val:.2f})"
 
     hand_roi = screen[350:440, 1000:1090]
     gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
@@ -131,27 +131,8 @@ def check_pickup_hand(screen):
     return False, 0, 0, ""
 
 
-def check_pick_all_dialog(screen):
-    if screen is None:
-        return False, 0, 0
-
-    roi = screen[480:600, 260:410]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask_green = cv2.inRange(hsv, np.array([35, 70, 70]), np.array([85, 255, 255]))
-    green_pixels = np.sum(mask_green > 0)
-
-    if green_pixels > 400:
-        return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    text = pytesseract.image_to_string(gray, config=r"--psm 7").strip()
-    if any(k in text.lower() for k in ["pick", "all", "เก็บ"]):
-        return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
-
-    return False, 0, 0
-
-
 def detect_target_tree(screen):
+    """ตรวจหาต้นไม้จากไฟล์ภาพใน icons/ ล้วนๆ 100% (ไม่ใช้เฉดสี HSV)"""
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0
 
@@ -200,6 +181,7 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
+    """ตรวจสอบชื่อเป้าหมายและแถบเลือด"""
     if screen is None:
         return False, "ไม่พบชื่อ"
 
@@ -286,19 +268,14 @@ def calculate_walk_angle(target_x):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ตัดต้นไม้ -> เจอรูปมือกดทันที -> กด Pick All -> พัก 5 วิ -> เริ่มรอบใหม่")
+    print("[*] UtopiaFarmAI: ตรวจจับไฟล์รูปภาพต้นไม้ 100% -> ซูมวิเคราะห์ -> แนบชิด")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     print("=" * 60)
     time.sleep(2)
 
-    round_count = 0
-
     while True:
-        round_count += 1
-        print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
-
-        # 1. กวาดสายตา 360 องศา (8 มุม)
-        print("[*] กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้รอบตัว...")
+        # 1. กวาดสายตา 360 องศา (8 มุม) โดยเทียบกับไฟล์รูปภาพต้นไม้โดยตรง
+        print("\n[*] กวาดสายตา 360 องศาค้นหาลวดลายไฟล์รูปภาพต้นไม้รอบตัว...")
         candidate_found = False
         target_x = 0
 
@@ -315,12 +292,10 @@ def main():
                 rotate_view_right(dist=180)
 
         if not candidate_found:
-            print("\n[!] ไม่พบลวดลายต้นไม้รอบตัว 360 องศา -> ขยับเดินตรง 1 ครั้งเพื่อเปลี่ยนจุด...")
-            walk_direction(0, duration_ms=1000)
-            time.sleep(0.5)
-            continue
+            print("\n[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบไฟล์ต้นไม้ -> หยุดการทำงาน")
+            return
 
-        # 2. ล็อกจอภาพนิ่งสนิท แล้วซูมตรวจชื่อไฟล์
+        # 2. ล็อกจอภาพนิ่งสนิท แล้วเปิดโหมด Digital Zoom
         print("[🛑] ล็อกหน้าจอนิ่งสนิท ไม่ขยับมุมมอง...")
         time.sleep(1.0)
         print("[🔬] เปิดโหมดซูมสายตา (Digital Zoom) เพื่อระบุชื่อไฟล์และประเภทต้นไม้...")
@@ -343,12 +318,14 @@ def main():
         print(f"[✓] ยืนยันเป้าหมายถูกต้อง ({tree_type_name})! เตรียมเดินเข้าหา...")
         time.sleep(1.2)
 
-        # 3. เดินเข้าหาเป้าหมาย
+        # 3. เดินเข้าหาเป้าหมายแบบ Real-time
+        reached_close = False
         for step in range(20):
             curr_scr = get_screen()
 
             if check_pickup_hand(curr_scr)[0]:
                 print(f"\n[🎯] ถึงระยะประชิดตัวละครแล้ว (พบปุ่มเก็บของ)!")
+                reached_close = True
                 break
 
             found_step, _, cur_x, cur_area, cur_h = detect_target_tree(curr_scr)
@@ -365,8 +342,9 @@ def main():
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 print(f"[*] ก้าวที่ {step + 1} | เดิน: {direction_label} ({walk_deg:.1f}°) | สูง={cur_h}px")
 
-                if cur_h >= 280 or cur_area >= 24000:
+                if cur_h >= 320 or cur_area >= 24000:
                     print(f"\n[🎯] ลำต้นแนบชิดตัวละครแล้ว! (สูง: {cur_h}px)")
+                    reached_close = True
                     break
 
                 walk_direction(walk_deg, duration_ms=460)
@@ -375,7 +353,7 @@ def main():
                 walk_direction(0, duration_ms=350)
                 time.sleep(0.1)
 
-        # 4. ทดสอบฟันเพื่อเช็กชื่อ
+        # 4. ทดสอบฟันเพื่อเช็กชื่อ: ตีครบ 3 ครั้งไม่มีชื่อให้หยุดล้มเหลว
         name_verified = False
         for verify_attempt in range(1, 4):
             print(f"\n[🪓] ทดสอบกดตีครั้งที่ {verify_attempt}/3 เพื่อเช็กป้ายชื่อเป้าหมาย...")
@@ -396,61 +374,39 @@ def main():
                     time.sleep(0.2)
 
         if not name_verified:
-            print("[!] ตีครบ 3 ครั้งแล้วไม่มีชื่อขึ้น -> ข้ามไปหาต้นถัดไป")
-            rotate_view_right(dist=180)
-            continue
+            print("\n" + "=" * 55)
+            print("[!] ล้มเหลว: ทดสอบตีครบ 3 ครั้งแล้วไม่มีชื่อ/แถบเลือดขึ้นมา -> สั่งหยุดการทำงานทันที")
+            print("=" * 55)
+            return
 
-        # 5. ฟันจนเลือดหมด หรือขึ้นรูปมือ -> หยุดตีทันที
-        print(f"[✓] ยืนยันชื่อถูกต้อง! เริ่มต้นฟัน {tree_type_name}...")
+        # 5. ฟันจนเลือดหมด และเก็บของ
+        print(f"[✓] ยืนยันชื่อถูกต้อง! เริ่มต้นฟัน {tree_type_name} ต่อเนื่องจนกว่าหลอดเลือดจะหมด...")
         hits = 0
-
-        while hits < 40:
+        while hits < 35:
             hits += 1
             tap(1100, 530)
-            time.sleep(0.36)
+            time.sleep(0.38)
 
-            if hits % 2 == 0:
+            if hits % 3 == 0:
                 chk_scr = get_screen()
-                hand_found, hx, hy, _ = check_pickup_hand(chk_scr)
+                hand_ready, _, _, _ = check_pickup_hand(chk_scr)
                 name_alive, _ = check_target_name_match(chk_scr)
-
-                if hand_found or not name_alive:
-                    print(f"\n[🛑] เลือดหมด/พบปุ่มรูปมือขึ้นมาแล้ว! (หยุดฟันทันทีหลังตีไป {hits} ครั้ง)")
+                if hand_ready or not name_alive:
+                    print(f"[✓] ต้นไม้ล้มเรียบร้อยแล้ว (ฟันไปทั้งหมด {hits} ครั้ง)")
                     break
 
-        # 6. กดปุ่มรูปมือ -> หน้าต่างเปิด -> กดปุ่ม Pick All สีเขียว
-        time.sleep(0.4)
-        post_scr = get_screen()
-        hand_up, hx, hy, _ = check_pickup_hand(post_scr)
-
-        if hand_up:
-            print(f"[🖐️] แตะที่ปุ่มรูปมือ ({hx}, {hy})...")
-            tap(hx, hy)
-            time.sleep(0.5)
-
-        dialog_scr = get_screen()
-        pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
-
-        if pick_all_ready:
-            print(f"[📦] ปรากฏหน้าต่างไอเทม -> แตะปุ่มเขียว 'Pick All' ที่ ({px}, {py})")
-            tap(px, py)
-            time.sleep(0.3)
-            tap(px, py)
-        else:
-            print("[📦] แตะพิกัด Pick All (335, 545)...")
-            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
-            time.sleep(0.3)
-            tap(PICK_ALL_BTN[0], PICK_ALL_BTN[1])
-
-        print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์! ชื่อต้นไม้หายไปแล้ว")
-
-        # พักรอ 5 วินาทีก่อนเริ่มรอบใหม่
-        print("[⏳] รอนิ่ง 5 วินาทีเพื่อรอไอเทมและแอนิเมชันในเกมเคลียร์สมบูรณ์...")
-        for wait_sec in range(5, 0, -1):
-            print(f"[*] พักรอ... เหลือ {wait_sec} วิ")
-            time.sleep(1.0)
-
-        print("[🚀] เริ่มต้นสแกนหาต้นต่อไปทันที...\n")
+        time.sleep(0.6)
+        for _ in range(4):
+            final_scr = get_screen()
+            hand_found, hx, hy, hinfo = check_pickup_hand(final_scr)
+            if hand_found:
+                print(f"[✓] แตะปุ่มเก็บไอเทม ({hinfo}) ที่พิกัด ({hx}, {hy})...")
+                tap(hx, hy)
+                time.sleep(0.3)
+            else:
+                break
+        print("\n[✓] เสร็จสิ้นภารกิจ 1 รอบสมบูรณ์!")
+        time.sleep(1.5)
 
 
 if __name__ == "__main__":
