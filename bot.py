@@ -591,13 +591,13 @@ def main():
                     print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
-
-                                walk_direction(walk_deg, duration_ms=480)
+             
+                walk_direction(walk_deg, duration_ms=480)
                 time.sleep(0.08)
             else:
                 print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
                 target_reacquired = False
-                
+
                 # นับถอยหลัง 5 วินาทีเพื่อมองหาเป้าหมายซ้ำ
                 for wait_sec in range(5, 0, -1):
                     print(f"[*] กำลังค้นหาเป้าหมายใหม่... นับถอยหลังเหลือ {wait_sec} วินาที")
@@ -609,7 +609,7 @@ def main():
                         target_reacquired = True
                         break
 
-                # หากครบ 5 วินาทีแล้วยังไม่เจอ ให้หยุดทำงานทันที
+                # หากครบ 5 วินาทีแล้วยังไม่เจอเป้าหมาย ให้หยุดทำงานทันที
                 if not target_reacquired:
                     print("\n" + "=" * 60)
                     print("[!] ล้มเหลว: เป้าหมายหลุดมุมมองเกิน 5 วินาที -> สั่งหยุดทำงานทันที")
