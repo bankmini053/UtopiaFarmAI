@@ -285,10 +285,10 @@ def check_target_name_match(screen):
 
     return False, "ชื่อไม่ตรงกับ tree_rubber.png หรือ name_coconut.png"
     def pitch_camera_down():
-    """รูดปรับมุมมองกล้องก้มลงพื้นจนสุด (Top-Down View) แบบในคลิป"""
     cx, cy = 850, 480
     swipe_screen(cx, cy, cx, cy - 350, duration=300)
     time.sleep(0.4)
+
 
 
 def check_topdown_proximity(screen):
