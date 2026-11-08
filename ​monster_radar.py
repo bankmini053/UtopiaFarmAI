@@ -1,4 +1,4 @@
-cat << 'EOF' > ~/UtopiaFarmAI/monster_radar.py
+
 import os
 import time
 import subprocess
@@ -7,7 +7,7 @@ import numpy as np
 
 ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/radar_scr.png"
-OUTPUT_RADAR = "/data/local/tmp/monster_esp.png"
+OUTPUT_RADAR = os.path.expanduser("~/UtopiaFarmAI/monster_esp.png")
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
 def run_cmd(cmd):
@@ -15,6 +15,7 @@ def run_cmd(cmd):
 
 def get_screen():
     run_cmd(f"screencap -p {TMP_PATH}")
+    run_cmd(f"chmod 777 {TMP_PATH}")
     if os.path.exists(TMP_PATH):
         img = cv2.imread(TMP_PATH)
         if img is not None:
@@ -26,7 +27,7 @@ def get_screen():
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ระบบตรวจจับเรดาร์ มอนสเตอร์/สัตว์/วัตถุ")
+    print("[*] UtopiaFarmAI: ตรวจจับเรดาร์ มอนสเตอร์/สัตว์/ทรัพยากร")
     print("=" * 60)
 
     print("\n[⏳] กำลังเริ่มใน 5 วินาที... (กรุณาสลับหน้าจอเข้าเกม)")
@@ -43,8 +44,6 @@ def main():
     result_img = screen.copy()
     gray_screen = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
 
-    # กำหนดหมวดหมู่วัตถุ และไฟล์ภาพไอคอนใน icons/
-    # นำภาพสัตว์/มอนสเตอร์มาวางเพิ่มในโฟลเดอร์ icons ได้ เช่น mob_turtle.png, mob_bear.png
     detect_database = {
         "MONSTER/ANIMAL": ["mob_turtle.png", "mob_bear.png", "mob_wolf.png"],
         "RESOURCE_TREE": ["tree_coconut.png", "tree_coconut2.png", "tree_name1.png"],
@@ -76,7 +75,6 @@ def main():
                     cx = pt[0] + (tw // 2)
                     cy = pt[1] + (th // 2)
 
-                    # ตัดกรอบที่ซ้อนทับกันเกินไป
                     duplicate = False
                     for item in detected_targets:
                         if abs(cx - item['cx']) < 40 and abs(cy - item['cy']) < 40:
@@ -92,9 +90,7 @@ def main():
                             "x2": pt[0] + tw,
                             "y2": pt[1] + th,
                             "cx": cx,
-                            "cy": cy,
-                            "w": tw,
-                            "h": th
+                            "cy": cy
                         })
 
     print(f"\n[🎯] ตรวจพบเป้าหมายรอบตัวทั้งหมด: {len(detected_targets)} ตัว")
@@ -103,24 +99,21 @@ def main():
     for idx, target in enumerate(detected_targets, 1):
         color = (0, 0, 255) if target["category"] == "MONSTER/ANIMAL" else (0, 255, 0)
         
-        # วาดกรอบสี่เหลี่ยมแบบ ESP Box
         cv2.rectangle(result_img, (target["x1"], target["y1"]), (target["x2"], target["y2"]), color, 2)
-        
-        # วาดเส้นเล็งจากจุดกึ่งกลางจอ (ตัวละคร) ไปยังเป้าหมาย
         cv2.line(result_img, (640, 360), (target["cx"], target["cy"]), color, 1)
         
-        # ใส่ป้ายกำกับชื่อประเภทและพิกัด
         tag = f"{target['filename'].split('.')[0]}"
         cv2.putText(result_img, tag, (target["x1"], max(25, target["y1"] - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         print(f"[{idx}] {target['category']} -> {tag} | พิกัดกลาง: ({target['cx']}, {target['cy']})")
 
-    # จุดกึ่งกลางตัวละคร
     cv2.circle(result_img, (640, 360), 6, (255, 255, 0), -1)
+    
     cv2.imwrite(OUTPUT_RADAR, result_img)
     print("-" * 55)
-    print(f"[✓] บันทึกภาพ ESP เรดาร์ไว้ที่: {OUTPUT_RADAR}")
+    print(f"[✓] เซฟภาพผลลัพธ์สำเร็จ ไม่ติด Permission Denied!")
+    print(f"[*] ภาพอยู่ที่: {OUTPUT_RADAR}")
 
 if __name__ == "__main__":
     main()
