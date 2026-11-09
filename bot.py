@@ -12,14 +12,13 @@ TMP_PATH = "/data/local/tmp/screen.png"
 LOCKED_IMG_PATH = "/data/local/tmp/bot_target_locked.png"
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
-# พารามิเตอร์หน้าจอและมุมมองกล้อง
+# พารามิเตอร์หน้าจอและมุมมองกล้อง 3D
 SCREEN_W = 1280
 SCREEN_H = 720
 HFOV_DEG = 60
 DEADZONE_PX = 40
-TURN_THRESHOLD_DEG = 22
-TURN_GAIN = 0.8
-CAMERA_PX_PER_DEG = 4.0
+DEADZONE_3D_X = 65
+CAMERA_SENSITIVITY = 0.75
 
 # พิกัดปุ่ม Pick All สีเขียว
 PICK_ALL_BTN = (335, 545)
@@ -45,7 +44,6 @@ def swipe_screen(x1, y1, x2, y2, duration=240):
 def get_screen():
     run_cmd(f"screencap -p {TMP_PATH}")
     if os.path.exists(TMP_PATH):
-        # รอเขียนไฟล์เสร็จสมบูรณ์เพื่อป้องกัน libpng error
         for _ in range(6):
             if os.path.getsize(TMP_PATH) > 50000:
                 break
@@ -86,10 +84,6 @@ def match_texture(target_img, icon_filename, threshold=0.48):
 
 
 def optical_zoom_analysis(screen, target_x, target_y=260):
-    """
-    วิเคราะห์ลวดลายต้นไม้ เลือกต้นที่ใหญ่ที่สุด
-    คืนค่า: (พบหรือไม่, ชื่อต้นไม้, ชื่อไฟล์, ข้อความ, พิกัด X กลาง, พิกัดกล่องกรอบจริง rx, ry, rw, rh)
-    """
     default_box = (max(0, target_x - 70), 100, 140, 240)
     if screen is None:
         return False, "ไม่ทราบ", "ไม่มี", "ไม่พบภาพ", target_x, default_box
@@ -167,14 +161,9 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
 
 
 def check_tree_cut_finished(screen):
-    """
-    ข้อ 5: เช็กว่าตัดเสร็จหรือยัง
-    เงื่อนไข: No_Name_Rubber_tree.png (ไม่มีเลือด) หรือ เจอ มือ.png
-    """
     if screen is None:
         return False, 0, 0
 
-    # 1. ตรวจสอบปุ่ม มือ.png
     hand_path = os.path.join(ICONS_DIR, "มือ.png")
     if os.path.exists(hand_path):
         tpl = cv2.imread(hand_path)
@@ -188,7 +177,6 @@ def check_tree_cut_finished(screen):
                     hy = 300 + loc[1] + (tpl.shape[0] // 2)
                     return True, hx, hy
 
-    # 2. ตรวจสอบ No_Name_Rubber_tree.png บริเวณขวาบน
     no_name_path = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
     if os.path.exists(no_name_path):
         tpl_no = cv2.imread(no_name_path)
@@ -204,7 +192,6 @@ def check_tree_cut_finished(screen):
 
 
 def check_pickup_hand(screen):
-    """ตรวจจับปุ่มรูปมือ pickup_hand.png ในพิกัดจอ"""
     if screen is None:
         return False, 0, 0, ""
 
@@ -223,18 +210,15 @@ def check_pickup_hand(screen):
 
 
 def check_pick_all_dialog(screen):
-    """ตรวจจับหน้าต่างเก็บของ: ต้องมีปุ่มเขียว หรือ คำว่า Pick / All / เก็บ"""
     if screen is None:
         return False, 0, 0
 
-    # 1. เช็กปุ่มเขียว Pick All
     roi = screen[480:600, 260:410]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mask_green = cv2.inRange(hsv, np.array([35, 70, 70]), np.array([85, 255, 255]))
     if np.sum(mask_green > 0) > 380:
         return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
 
-    # 2. เช็กตัวอักษร OCR
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     text = pytesseract.image_to_string(gray, lang="eng+tha", config=r"--psm 7").strip()
     if any(k in text.lower() for k in ["pick", "all", "เก็บ"]):
@@ -244,15 +228,9 @@ def check_pick_all_dialog(screen):
 
 
 def check_bag_status(screen):
-    """
-    ข้อ 1: ตรวจสอบสถานะกระเป๋า
-    คืนค่า: 'full' (กระเป๋าส้ม.png), 'normal' (กระเป๋า.png), 'unknown' (ไม่พบ)
-    """
     if screen is None:
         return "unknown"
 
-    # โซนกระเป๋า (ปกติอยู่แถบขวาบนหรือขวาล่าง ให้ครอบคลุมขอบจอ)
-    # เช็กกระเป๋าส้มก่อน
     f_orange = os.path.join(ICONS_DIR, "กระเป๋าส้ม.png")
     if os.path.exists(f_orange):
         tpl = cv2.imread(f_orange)
@@ -262,7 +240,6 @@ def check_bag_status(screen):
             if val >= 0.60:
                 return "full"
 
-    # เช็กกระเป๋าปกติ
     f_normal = os.path.join(ICONS_DIR, "กระเป๋า.png")
     if os.path.exists(f_normal):
         tpl = cv2.imread(f_normal)
@@ -276,17 +253,10 @@ def check_bag_status(screen):
 
 
 def check_axe_status(screen):
-    """
-    ข้อ 2: ตรวจสอบสถานะขวานแถบล่าง
-    คืนค่า: True (พร้อมใช้ ขวาน.png), False (พัง/แถบแดง ขวานแดง.png)
-    """
     if screen is None:
         return True
 
-    # โซนแถบช่องใส่อุปกรณ์ด้านล่าง (Y=560-720, X=350-950)
     roi = screen[560:720, 350:950]
-
-    # ตรวจสอบขวานแดงก่อน (ถ้าพังให้หยุดทันที)
     f_broken = os.path.join(ICONS_DIR, "ขวานแดง.png")
     if os.path.exists(f_broken):
         tpl = cv2.imread(f_broken)
@@ -294,9 +264,8 @@ def check_axe_status(screen):
             res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
             _, val, _, _ = cv2.minMaxLoc(res)
             if val >= 0.55:
-                return False  # ขวานพัง
+                return False
 
-    # ตรวจสอบขวานปกติสีเขียว
     f_ready = os.path.join(ICONS_DIR, "ขวาน.png")
     if os.path.exists(f_ready):
         tpl = cv2.imread(f_ready)
@@ -366,25 +335,17 @@ def detect_target_tree(screen):
 
 
 def check_target_name_match(screen):
-    """
-    ข้อ 4: บังคับตรวจชื่อต้นไม้เหนือหลอดเลือด
-    - ต้องตรงกับ Name_Rubber_tree.png หรือ OCR พบ Rubber Tree / ยางพารา เท่านั้น
-    - ถ้าเจอเลือดแต่ชื่อไม่ใช่ (เช่น Fern Tree) -> ให้ถือว่าไม่ใช่เป้าหมาย เพื่อหมุนหาต้นใหม่
-    """
     if screen is None:
         return False, False, "ไม่พบภาพหน้าจอ"
 
-    # โซนป้ายชื่อและหลอดเลือดมุมขวาบน
     roi = screen[100:360, 750:1270]
     hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-    # ตรวจจับแถบเลือดสีแดง
     mask_red1 = cv2.inRange(hsv_roi, np.array([0, 100, 100]), np.array([10, 255, 255]))
     mask_red2 = cv2.inRange(hsv_roi, np.array([160, 100, 100]), np.array([180, 255, 255]))
     red_count = int(np.sum(mask_red1 > 0) + np.sum(mask_red2 > 0))
     has_blood = red_count > 45
 
-    # 1. เทียบไฟล์ Name_Rubber_tree.png
     f_has_blood = os.path.join(ICONS_DIR, "Name_Rubber_tree.png")
     val_has_blood = 0.0
     if os.path.exists(f_has_blood):
@@ -393,7 +354,6 @@ def check_target_name_match(screen):
             res1 = cv2.matchTemplate(roi, tpl1, cv2.TM_CCOEFF_NORMED)
             _, val_has_blood, _, _ = cv2.minMaxLoc(res1)
 
-    # 2. เทียบไฟล์ No_Name_Rubber_tree.png (กรณีต้นไม้ล้ม/ตายแล้ว)
     f_no_blood = os.path.join(ICONS_DIR, "No_Name_Rubber_tree.png")
     val_no_blood = 0.0
     if os.path.exists(f_no_blood):
@@ -402,21 +362,17 @@ def check_target_name_match(screen):
             res2 = cv2.matchTemplate(roi, tpl2, cv2.TM_CCOEFF_NORMED)
             _, val_no_blood, _, _ = cv2.minMaxLoc(res2)
 
-    # 3. OCR สแกนเฉพาะตัวอักษรสีขาว
     lower_white = np.array([0, 0, 180])
     upper_white = np.array([180, 50, 255])
     mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
     raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip().lower()
 
-    # ดักชื่อต้นไม้อื่นที่ไม่ใช่ต้นยางพารา (เช่น Fern Tree)
     if any(k in raw_ocr for k in ["fern", "เฟิร์น", "stone", "หิน"]):
         return False, False, f"พบต้นไม้อื่น ({raw_ocr}) ไม่ใช่ต้นยางพารา -> หมุนหาใหม่"
 
-    # ตรวจว่าใช่ต้นไม้ล้มแล้วหรือไม่
     if val_no_blood >= 0.48 or (not has_blood and any(k in raw_ocr for k in ["rubber", "tree", "ยาง"])):
         return False, True, f"ต้นยางพาราล้มแล้ว (พร้อมเก็บของ) | OCR: '{raw_ocr}'"
 
-    # เงื่อนไขยืนยันว่าเป็นต้นยางพาราจริง + มีเลือด
     is_rubber_name = (val_has_blood >= 0.44) or any(k in raw_ocr for k in ["rubber", "tree", "ยาง", "พารา"])
 
     if is_rubber_name and has_blood:
@@ -448,16 +404,29 @@ def pixel_to_angle(target_x):
     return math.degrees(math.atan(off / f))
 
 
-def turn_camera(angle_deg):
-    px = int(min(abs(angle_deg) * TURN_GAIN * CAMERA_PX_PER_DEG, 500))
-    if px < 15:
-        return
-    cx, cy = 850, 240
-    if angle_deg > 0:
-        swipe_screen(cx, cy, cx - px, cy, duration=200)
+def turn_camera_3d(target_x):
+    """
+    ระบบหันมุมกล้อง 3D ฝั่งขวาของหน้าจอเพื่อดึงเป้าหมายเข้าหากึ่งกลางสายตา
+    """
+    center_x = SCREEN_W // 2
+    err_x = target_x - center_x
+
+    if abs(err_x) <= DEADZONE_3D_X:
+        return False
+
+    swipe_px = int(abs(err_x) * CAMERA_SENSITIVITY)
+    swipe_px = max(45, min(swipe_px, 320))
+
+    touch_start_x = 920
+    touch_start_y = 300
+    duration_ms = 190
+
+    if err_x > 0:
+        swipe_screen(touch_start_x, touch_start_y, touch_start_x - swipe_px, touch_start_y, duration=duration_ms)
     else:
-        swipe_screen(cx, cy, cx + min(px, 340), cy, duration=200)
-    time.sleep(0.3)
+        swipe_screen(touch_start_x, touch_start_y, touch_start_x + swipe_px, touch_start_y, duration=duration_ms)
+
+    return True
 
 
 def calculate_walk_angle(target_x):
@@ -470,51 +439,6 @@ def calculate_walk_angle(target_x):
         label = "ตรง"
     return ang % 360, f"{label} {ang:+.1f}°"
 
-def get_player_heading_angle(screen):
-    """
-    อ่านทิศทางการหันหน้าของตัวละครจากลูกศรบน Mini-map
-    คืนค่า: องศา (0-360°) หรือ None หากอ่านไม่ชัดเจน
-    """
-    if screen is None:
-        return None
-
-    # โซน Mini-map ขวาบน (Utopia: Origin)
-    map_roi = screen[20:170, 1110:1260]
-    h, w = map_roi.shape[:2]
-    center_x, center_y = w // 2, h // 2
-
-    arrow_roi = map_roi[center_y - 25:center_y + 25, center_x - 25:center_x + 25]
-    if arrow_roi.size == 0:
-        return None
-
-    hsv = cv2.cvtColor(arrow_roi, cv2.COLOR_BGR2HSV)
-    lower_arrow = np.array([0, 0, 200])
-    upper_arrow = np.array([180, 60, 255])
-    mask = cv2.inRange(hsv, lower_arrow, upper_arrow)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
-    arrow_cnt = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(arrow_cnt) < 15:
-        return None
-
-    M = cv2.moments(arrow_cnt)
-    if M["m00"] != 0:
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        pts = arrow_cnt.reshape(-1, 2)
-        dists = np.sum((pts - [cx, cy]) ** 2, axis=1)
-        tip = pts[np.argmax(dists)]
-        
-        rad = math.atan2(tip[1] - cy, tip[0] - cx)
-        deg = (math.degrees(rad) + 90) % 360
-        return round(deg, 1)
-
-    return None
-
-
 
 def main():
     print("=" * 60)
@@ -524,13 +448,12 @@ def main():
     time.sleep(2)
 
     round_count = 0
-    retry_mode = False
 
     while True:
         round_count += 1
         print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
 
-        # ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้
+        # ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้ (ตัดระบบ Mini-map ออกสมบูรณ์)
         print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้...")
         candidate_found = False
         target_x = 0
@@ -539,23 +462,6 @@ def main():
 
         for step in range(8):
             scr = get_screen()
-            
-            # อ่านทิศทางหันหน้าจาก Mini-map
-            heading = get_player_heading_angle(scr)
-            heading_str = f"{heading}°" if heading is not None else "ไม่ระบุ"
-
-            found, src, cx, cy, area, h = detect_target_tree(scr)
-            if found:
-                candidate_found = True
-                target_x = cx
-                target_y = cy
-                tree_info = src
-                print(f"\n[🌲] พบเป้าหมายที่มุม {step + 1}/8 (ทิศหันหน้า: {heading_str})! [{src}] (X={cx}, Y={cy}, สูง={h}px)")
-                break
-            else:
-                print(f"[🔄] สแกนมุม {step + 1}/8 (ทิศหันหน้า: {heading_str}) -> หมุนขวาต่อ...")
-                rotate_view_right(dist=180)
-
             found, src, cx, cy, area, h = detect_target_tree(scr)
             if found:
                 candidate_found = True
@@ -593,13 +499,12 @@ def main():
         else:
             print("[✓] ขวานพร้อมใช้งาน (ขวาน.png) -> ดำเนินการวิเคราะห์เฉดสีและเดินต่อได้")
 
-        # ขั้นตอนที่ 2: ล็อกเป้าหมายทันที (ไม่สั่งหมุนวนซ้ำ และไม่เซฟรูปภาพติด permission denied)
+        # ขั้นตอนที่ 2: ล็อกเป้าหมายทันที
         print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
         time.sleep(0.6)
         zoom_scr = get_screen()
         is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x, tree_box = optical_zoom_analysis(zoom_scr, target_x)
         
-        # ปรับค่า X ล่าสุด และยืนยันชื่อต้นไม้
         if is_real_tree:
             target_x = nearest_x
         else:
@@ -608,67 +513,67 @@ def main():
         print(f"[✓] ยืนยันเป้าหมาย [{tree_type_name}] สำเร็จ เตรียมเดินเข้าหาต้นนี้...")
         time.sleep(0.5)
 
-                print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ (มองหา -> วิเคราะห์ -> หัน -> หยุด -> วิเคราะห์ใหม่ -> เดิน)...")
+        # ขั้นตอนที่ 3: เดินเข้าหาตามลำดับ มอง -> หยุด -> จับภาพสด -> วิเคราะห์ต้นไม้ -> คำนวณการเดิน -> เดิน -> เดินแล้วหยุด
+        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ...")
         reached_close = False
 
         for step in range(35):
-            # ตรวจจับปุ่มรูปมือก่อนเริ่มก้าว (กรณีเดินมาถึงแล้วในจังหวะก่อนหน้า)
+            # ตรวจจับปุ่มรูปมือก่อนเริ่มก้าว
             curr_scr = get_screen()
             if check_pickup_hand(curr_scr)[0]:
                 print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
 
-            # ------------------------------------------------------------------
-            # [1. มองหา]
-            # ------------------------------------------------------------------
+            # มองหาเบื้องต้น
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                # --------------------------------------------------------------
-                # [2. วิเคราะห์เบื้องต้น & 3. หันจอ]
-                # --------------------------------------------------------------
-                is_turning = turn_camera_3d(cur_x)
-                if is_turning:
-                    print(f"[*] เบี่ยง {cur_x - (SCREEN_W // 2):+4d}px -> สั่งหันกล้อง 3D ดึงเป้าเข้ากลางจอ...")
+                # 1. มอง & สั่งหยุดนิ่ง 5 วินาทีก่อนเริ่มจับภาพ
+                print(f"[*] ก้าวที่ {step + 1:02d} | สั่งหยุดนิ่ง 5 วินาที เพื่อให้ฉากนิ่งสนิทก่อนจับภาพ...")
+                time.sleep(5.0)
 
-                    # ----------------------------------------------------------
-                    # [4. หยุดนิ่งสนิท]
-                    # ----------------------------------------------------------
+                # 2. จับภาพสด & วิเคราะห์ตำแหน่งต้นไม้ล่าสุด
+                curr_scr = get_screen()
+                found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                if not found_step:
+                    continue
+
+                # 3. ตรวจสอบระยะประชิด (ถึงระยะฟันหรือยัง)
+                if step >= 3 and cur_h >= 220:
+                    print(f"\n[🎯] วิเคราะห์ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
+                    reached_close = True
+                    break
+
+                # 4. วิเคราะห์การเบี่ยงเบน & ปรับมุมกล้อง 3D ให้ตรงเป้า
+                center_x = SCREEN_W // 2
+                err_x = cur_x - center_x
+                if abs(err_x) > DEADZONE_3D_X:
+                    print(f"[*] ตรวจภาพสด: เบี่ยง {err_x:+4d}px -> กำลังหมุนกล้องปรับมุม...")
+                    turn_camera_3d(cur_x)
                     time.sleep(0.35)
-
-                    # ----------------------------------------------------------
-                    # [5. วิเคราะห์ใหม่ทันที (แก้ปัญหาพิกัดเคลื่อนจากการหันจอ)]
-                    # ----------------------------------------------------------
+                    # ดึงภาพสดซ้ำทันทีหลังหันเสร็จเพื่ออัปเดตพิกัดก่อนเดิน
                     curr_scr = get_screen()
                     found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
                     if not found_step:
                         continue
 
-                # ดึงทิศทางและพิกัดล่าสุดที่ผ่านการปรับจูนแล้ว
+                # 5. คำนวณทิศทางการเดินสดจากพิกัดจริงล่าสุด
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
-                offset_center = cur_x - (SCREEN_W // 2)
-
+                offset_center = cur_x - center_x
                 print(f"[*] ก้าวที่ {step + 1:02d} | ทิศ: {direction_label:12s} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
                       f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px")
 
-                # --------------------------------------------------------------
-                # [6. ตรวจสอบระยะฟัน & เดิน]
-                # --------------------------------------------------------------
-                if step >= 3 and cur_h >= 220:
-                    print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
-                    reached_close = True
-                    break
-
-                # สั่งเดินหน้าตรง 1 ก้าวตามแนวพิกัดที่วิเคราะห์สด
+                # 6. เดินหน้า 1 ก้าว
                 walk_direction(walk_deg, duration_ms=480)
-                time.sleep(0.12)
+
+                # 7. เดินแล้วหยุดนิ่งเพื่อเตรียมวนรอบใหม่
+                time.sleep(0.35)
 
             else:
                 print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
                 target_reacquired = False
 
-                # ระบบนับถอยหลัง 5 วินาทีเพื่อรอสแกนหาซ้ำ
                 for wait_sec in range(5, 0, -1):
                     print(f"[*] กำลังค้นหาเป้าหมายใหม่... นับถอยหลังเหลือ {wait_sec} วินาที")
                     time.sleep(1.0)
@@ -683,7 +588,6 @@ def main():
                     print("\n[!] ล้มเหลว: ไม่พบเป้าหมายหลังครบกำหนด 5 วินาที -> หยุดการทำงาน")
                     return
 
-
         # ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
         print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
         walk_direction(0, duration_ms=280)
@@ -695,7 +599,6 @@ def main():
         is_target_ready, is_tree_dead, result_log = check_target_name_match(target_scr)
         print(f"[*] ผลการสแกน: {result_log}")
 
-        # ถ้าไม่ใช่เป้าหมาย (เช่น เจอ Fern Tree หรือหิน) ให้กลับไปเริ่มขั้นตอนที่ 1 หมุน 360 องศาหาต้นใหม่ทันที
         if not is_target_ready and not is_tree_dead:
             print("\n[🔄] ชื่อไม่ตรงกับ Name_Rubber_tree.png -> ย้อนกลับไปขั้นตอนที่ 1 เพื่อกวาดหา 360 องศาใหม่...")
             rotate_view_right(dist=220)
@@ -721,17 +624,14 @@ def main():
                     print(f"\n[🖐️] ฟันต้นไม้ล้มแล้ว! (ตีไป {hits} ครั้ง)")
                     break
 
-        # 1. หลอดเลือดหมด/ฟันเสร็จ: ให้หยุดนิ่ง 2 วินาที
         print("[⏳] ฟันเสร็จสมบูรณ์ -> หยุดนิ่ง 2 วินาที...")
         time.sleep(2.0)
 
-        # 2. ตรวจสอบปุ่มรูปมือ หรือใช้พิกัดสำรอง (670, 430)
         final_chk = get_screen()
         is_hand, hand_x, hand_y, _ = check_pickup_hand(final_chk)
         if is_hand:
             hx, hy = hand_x, hand_y
 
-        # หากระบบมองไม่เห็นปุ่มมือ ให้ใช้พิกัดสำรองในรูปภาพ (670, 430)
         if hx == 0 and hy == 0:
             hx, hy = 670, 430
             print(f"[*] ตรวจไม่พบไอคอนรูปมือ -> ใช้พิกัดสำรอง ({hx}, {hy}) ทันที")
