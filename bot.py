@@ -622,30 +622,41 @@ def main():
 
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
-            if found_step:
+                        if found_step:
+                # [1. มองหา & วิเคราะห์มุมเบี่ยงเบน]
                 ang = pixel_to_angle(cur_x)
+                
+                # ถ้าองศาเอียงเกินเกณฑ์ ต้องหันจอ
                 if abs(ang) > TURN_THRESHOLD_DEG:
+                    # [2. หันจอ] ปัดมุมกล้องเข้าหาต้นไม้
                     turn_camera(ang)
+                    
+                    # [3. หยุดนิ่ง] รอให้หน้าจอหยุดเคลื่อนที่สนิท
+                    time.sleep(0.35)
+                    
+                    # [4. วิเคราะห์ใหม่ทันที] ดึงภาพสดมาคำนวณพิกัดใหม่ทุกค่า เพราะตำแหน่งเลื่อนหลังหันจอ
                     curr_scr = get_screen()
                     found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                    if not found_step:
+                        continue
 
+                # [5. คำนวณทิศทางสดและแสดงผลข้อมูลล่าสุด]
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - (SCREEN_W // 2)
 
-                # อ่านทิศหันหน้าสดขณะเดิน
-                cur_heading = get_player_heading_angle(curr_scr)
-                head_txt = f"{cur_heading}°" if cur_heading is not None else "N/A"
+                print(f"[*] ก้าวที่ {step + 1:02d} | ทิศ: {direction_label:12s} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
+                      f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px")
 
-                print(f"[*] ก้าวที่ {step + 1:02d} | ทิศ: {head_txt:6s} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
-                      f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px | เดิน: {direction_label}")
-
+                # [6. วิเคราะห์ขนาดต้นไม้ใหญ่เมื่อเข้าใกล้]
                 if step >= 3 and cur_h >= 220:
                     print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
+                # [7. เดินหน้าตรงเข้าหาเป้าหมาย]
                 walk_direction(walk_deg, duration_ms=480)
-                time.sleep(0.08)
+                time.sleep(0.12)
+
 
                 if step >= 3 and cur_h >= 220:
                     print(f"\n[🎯] ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
