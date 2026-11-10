@@ -7,10 +7,21 @@ import cv2
 import numpy as np
 import pytesseract
 
+# นำเข้า YOLO (หากติดตั้ง ultralytics ไว้)
+try:
+    from ultralytics import YOLO
+    HAS_YOLO = True
+except ImportError:
+    HAS_YOLO = False
+
 ROOT_SU = "/system/xbin/su"
 TMP_PATH = "/data/local/tmp/screen.png"
 LOCKED_IMG_PATH = "/data/local/tmp/bot_target_locked.png"
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
+
+# พาธไฟล์โมเดล YOLOv8 Nano ที่เทรนไว้ (เช่น best.pt หรือ utopia_yolov8n.pt)
+YOLO_MODEL_PATH = os.path.expanduser("~/UtopiaFarmAI/models/utopia_yolov8n.pt")
+yolo_model = None
 
 # พารามิเตอร์หน้าจอและมุมมองกล้อง 3D
 SCREEN_W = 1280
@@ -58,6 +69,104 @@ def get_screen():
     return None
 
 
+# ==============================================================================
+# [ระบบใหม่ 1]: YOLOv8 Nano สำหรับตรวจจับวัตถุ 3D (ต้นไม้, โกเลม, เต่า, เห็ด)
+# ==============================================================================
+def init_yolo():
+    global yolo_model
+    if HAS_YOLO and os.path.exists(YOLO_MODEL_PATH):
+        try:
+            yolo_model = YOLO(YOLO_MODEL_PATH)
+            print(f"[🤖] โหลดโมเดล YOLOv8 Nano สำเร็จ: {YOLO_MODEL_PATH}")
+            return True
+        except Exception as e:
+            print(f"[⚠️] โหลดโมเดล YOLO ล้มเหลว: {e}")
+            yolo_model = None
+            return False
+    return False
+
+
+def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "tree"]):
+    """
+    ตรวจจับวัตถุ 3D ด้วย YOLOv8 Nano คืนค่า Bounding Box ของเป้าหมายที่เด่นที่สุด
+    """
+    if yolo_model is None or screen is None:
+        return False, "ไม่พบ", 0, 0, 0, 0
+
+    results = yolo_model(screen, verbose=False, conf=0.40)
+    best_x, best_y, best_area, best_h = 0, 0, 0, 0
+    best_label = ""
+    center_screen_x = SCREEN_W // 2
+
+    min_offset_x = 9999
+
+    for r in results:
+        boxes = r.boxes
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            cls_name = r.names[cls_id]
+            conf = float(box.conf[0])
+
+            # กรองเฉพาะ Class วัตถุที่ต้องการ
+            if any(tc.lower() in cls_name.lower() for tc in target_classes) or len(target_classes) == 0:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                bw = x2 - x1
+                bh = y2 - y1
+                cx = x1 + (bw // 2)
+                cy = y1 + (bh // 2)
+                area = bw * bh
+
+                # เลือกต้นไม้ที่อยู่กึ่งกลางสายตามากที่สุด
+                offset_x = abs(cx - center_screen_x)
+                if offset_x < min_offset_x:
+                    min_offset_x = offset_x
+                    best_x = cx
+                    best_y = cy
+                    best_area = area
+                    best_h = bh
+                    best_label = f"YOLO:{cls_name} ({conf:.2f})"
+
+    if best_label != "":
+        return True, best_label, best_x, best_y, best_area, best_h
+
+    return False, "ไม่พบ", 0, 0, 0, 0
+
+
+# ==============================================================================
+# [ระบบใหม่ 2]: Masking ตรวจจับวงเล็ง (Crosshair) + OCR อ่านชื่อตรงกลาง
+# ==============================================================================
+def check_crosshair_and_target_ocr(screen):
+    """
+    ใช้ Masking สีขาว/เหลืองรอบกึ่งกลางจอเพื่อจับจุดเล็งเป้า และดึงชื่อขึ้นมาอ่านด้วย OCR
+    """
+    if screen is None:
+        return False, "ไม่พบภาพ", False
+
+    # ROI บริเวณกึ่งกลางหน้าจอ (รัศมีจุดเล็ง)
+    cx, cy = SCREEN_W // 2, SCREEN_H // 2
+    roi_crosshair = screen[cy - 60:cy + 60, cx - 60:cx + 60]
+
+    # Masking สีขาวของวงเล็ง Crosshair
+    hsv = cv2.cvtColor(roi_crosshair, cv2.COLOR_BGR2HSV)
+    lower_white = np.array([0, 0, 200])
+    upper_white = np.array([180, 45, 255])
+    mask_cross = cv2.inRange(hsv, lower_white, upper_white)
+
+    crosshair_detected = np.sum(mask_cross > 0) > 40
+
+    # ดึงพื้นที่แสดงชื่อเป้าหมายด้านบนวงเล็งขึ้นไปอ่าน OCR
+    roi_name = screen[max(0, cy - 180):cy - 20, max(0, cx - 180):min(SCREEN_W, cx + 180)]
+    gray_name = cv2.cvtColor(roi_name, cv2.COLOR_BGR2GRAY)
+    _, thresh_name = cv2.threshold(gray_name, 190, 255, cv2.THRESH_BINARY)
+    text = pytesseract.image_to_string(thresh_name, lang="eng+tha", config=r"--psm 7").strip().lower()
+
+    is_rubber = any(k in text for k in ["rubber", "tree", "ยาง", "พารา"])
+    return crosshair_detected, text, is_rubber
+
+
+# ==============================================================================
+# [คงเดิม]: Template Matching ใช้งานกับ 2D UI ทรงคงที่ (ปุ่ม, หลอดเลือด, ขวาน, กระเป๋า)
+# ==============================================================================
 def match_texture(target_img, icon_filename, threshold=0.48):
     icon_path = os.path.join(ICONS_DIR, icon_filename)
     if not os.path.exists(icon_path):
@@ -279,9 +388,19 @@ def check_axe_status(screen):
 
 
 def detect_target_tree(screen):
+    """
+    ผสานรวม: เรียกใช้ YOLOv8 ก่อน ถ้าไม่มีโมเดลจะ Fallback กลับไปใช้ Template Matching ดั้งเดิม
+    """
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0, 0
 
+    # 1. ลองใช้ YOLO ก่อนเป็นอันดับแรก
+    if yolo_model is not None:
+        found_yolo, label_yolo, yx, yy, yarea, yh = detect_objects_yolo(screen)
+        if found_yolo:
+            return True, label_yolo, yx, yy, yarea, yh
+
+    # 2. ถ้าไม่มีโมเดล หรือ YOLO ไม่พบ ให้ใช้ Template Matching ตามปกติ
     target_roi = screen[40:620, 80:1200]
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
@@ -337,6 +456,11 @@ def detect_target_tree(screen):
 def check_target_name_match(screen):
     if screen is None:
         return False, False, "ไม่พบภาพหน้าจอ"
+
+    # เรียกใช้ระบบใหม่: ตรวจจับวงเล็งกลางจอร่วมด้วย
+    cross_detected, center_ocr, is_rubber_center = check_crosshair_and_target_ocr(screen)
+    if cross_detected and is_rubber_center:
+        return True, False, f"พบเป้าเล็งกลางจอตรงกับต้นยางพารา (OCR: '{center_ocr}')"
 
     roi = screen[100:360, 750:1270]
     hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -405,9 +529,6 @@ def pixel_to_angle(target_x):
 
 
 def turn_camera_3d(target_x):
-    """
-    ระบบหันมุมกล้อง 3D ฝั่งขวาของหน้าจอเพื่อดึงเป้าหมายเข้าหากึ่งกลางสายตา
-    """
     center_x = SCREEN_W // 2
     err_x = target_x - center_x
 
@@ -442,8 +563,12 @@ def calculate_walk_angle(target_x):
 
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ระบบฟาร์มอัตโนมัติ (คงฟังก์ชันครบ 100% แก้ตรงจุด)")
+    print("[*] UtopiaFarmAI: ระบบฟาร์มอัตโนมัติ (YOLOv8 + Masking วงเล็ง + Template)")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
+    
+    # เริ่มต้นโมเดล YOLO
+    init_yolo()
+    
     print("=" * 60)
     time.sleep(2)
 
@@ -453,8 +578,7 @@ def main():
         round_count += 1
         print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
 
-        # ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้ (ตัดระบบ Mini-map ออกสมบูรณ์)
-        print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาลวดลายต้นไม้...")
+        print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาเป้าหมาย...")
         candidate_found = False
         target_x = 0
         target_y = 0
@@ -480,7 +604,6 @@ def main():
             print("=" * 55)
             return
 
-        # ตรวจสอบข้อ 1: สถานะกระเป๋า
         scr_check = get_screen()
         bag_status = check_bag_status(scr_check)
         if bag_status == "full":
@@ -489,7 +612,6 @@ def main():
         else:
             print("[✓] สถานะกระเป๋าปกติ (กระเป๋า.png)")
 
-        # ตรวจสอบข้อ 2: สถานะขวานแถบล่าง
         axe_ready = check_axe_status(scr_check)
         if not axe_ready:
             print("\n" + "=" * 60)
@@ -499,7 +621,6 @@ def main():
         else:
             print("[✓] ขวานพร้อมใช้งาน (ขวาน.png) -> ดำเนินการวิเคราะห์เฉดสีและเดินต่อได้")
 
-        # ขั้นตอนที่ 2: ล็อกเป้าหมายทันที
         print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
         time.sleep(0.6)
         zoom_scr = get_screen()
@@ -513,61 +634,49 @@ def main():
         print(f"[✓] ยืนยันเป้าหมาย [{tree_type_name}] สำเร็จ เตรียมเดินเข้าหาต้นนี้...")
         time.sleep(0.5)
 
-        # ขั้นตอนที่ 3: เดินเข้าหาตามลำดับ มอง -> หยุด -> จับภาพสด -> วิเคราะห์ต้นไม้ -> คำนวณการเดิน -> เดิน -> เดินแล้วหยุด
         print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ...")
         reached_close = False
 
         for step in range(35):
-            # ตรวจจับปุ่มรูปมือก่อนเริ่มก้าว
             curr_scr = get_screen()
             if check_pickup_hand(curr_scr)[0]:
                 print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
                 reached_close = True
                 break
 
-            # มองหาเบื้องต้น
             found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
 
             if found_step:
-                # 1. มอง & สั่งหยุดนิ่ง 5 วินาทีก่อนเริ่มจับภาพ
                 print(f"[*] ก้าวที่ {step + 1:02d} | สั่งหยุดนิ่ง 5 วินาที เพื่อให้ฉากนิ่งสนิทก่อนจับภาพ...")
                 time.sleep(5.0)
 
-                # 2. จับภาพสด & วิเคราะห์ตำแหน่งต้นไม้ล่าสุด
                 curr_scr = get_screen()
                 found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
                 if not found_step:
                     continue
 
-                # 3. ตรวจสอบระยะประชิด (ถึงระยะฟันหรือยัง)
                 if step >= 3 and cur_h >= 220:
                     print(f"\n[🎯] วิเคราะห์ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
                     reached_close = True
                     break
 
-                # 4. วิเคราะห์การเบี่ยงเบน & ปรับมุมกล้อง 3D ให้ตรงเป้า
                 center_x = SCREEN_W // 2
                 err_x = cur_x - center_x
                 if abs(err_x) > DEADZONE_3D_X:
                     print(f"[*] ตรวจภาพสด: เบี่ยง {err_x:+4d}px -> กำลังหมุนกล้องปรับมุม...")
                     turn_camera_3d(cur_x)
                     time.sleep(0.35)
-                    # ดึงภาพสดซ้ำทันทีหลังหันเสร็จเพื่ออัปเดตพิกัดก่อนเดิน
                     curr_scr = get_screen()
                     found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
                     if not found_step:
                         continue
 
-                # 5. คำนวณทิศทางการเดินสดจากพิกัดจริงล่าสุด
                 walk_deg, direction_label = calculate_walk_angle(cur_x)
                 offset_center = cur_x - center_x
                 print(f"[*] ก้าวที่ {step + 1:02d} | ทิศ: {direction_label:12s} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
                       f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px")
 
-                # 6. เดินหน้า 1 ก้าว
                 walk_direction(walk_deg, duration_ms=480)
-
-                # 7. เดินแล้วหยุดนิ่งเพื่อเตรียมวนรอบใหม่
                 time.sleep(0.35)
 
             else:
@@ -588,7 +697,6 @@ def main():
                     print("\n[!] ล้มเหลว: ไม่พบเป้าหมายหลังครบกำหนด 5 วินาที -> หยุดการทำงาน")
                     return
 
-        # ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้งเพื่อเช็กชื่อและเลือด
         print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
         walk_direction(0, duration_ms=280)
         time.sleep(0.15)
@@ -604,7 +712,6 @@ def main():
             rotate_view_right(dist=220)
             continue
 
-        # ขั้นตอนที่ 5: ฟันต่อเนื่องจนต้นไม้ล้ม
         print(f"\n[5] ขั้นตอนที่ 5: ยืนยันต้นยางพาราถูกต้อง! เริ่มต้นฟันต่อเนื่อง...")
         hits = 0
         hand_detected = False
@@ -642,7 +749,6 @@ def main():
         tap(hx, hy)
         time.sleep(1.2)
 
-        # ขั้นตอนที่ 6: ต้องขึ้นหน้าต่างคำว่า "เก็บ" / "Pick All" เท่านั้น
         print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ปุ่มสีเขียว / คำว่า 'เก็บ')...")
         dialog_scr = get_screen()
         pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
@@ -660,7 +766,6 @@ def main():
 
         print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์!")
 
-        # ขั้นตอนที่ 7: พักรอ 5 วินาที
         print("\n[7] ขั้นตอนที่ 7: รอนิ่ง 5 วินาทีเพื่อให้โมเดลในฉากหายสนิท...")
         for wait_sec in range(5, 0, -1):
             print(f"[*] พักรอ... เหลือ {wait_sec} วิ")
