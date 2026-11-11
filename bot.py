@@ -86,7 +86,7 @@ def init_yolo():
     return False
 
 
-def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "tree"]):
+def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "tree"], char_pos=(640, 480)):
     """
     ตรวจจับวัตถุ 3D ด้วย YOLOv8 Nano คืนค่า Bounding Box ของเป้าหมายที่เด่นที่สุด
     """
@@ -94,11 +94,11 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
         return False, "ไม่พบ", 0, 0, 0, 0
 
     results = yolo_model(screen, verbose=False, conf=0.40)
+    char_x, char_y = char_pos
     best_x, best_y, best_area, best_h = 0, 0, 0, 0
     best_label = ""
-    center_screen_x = SCREEN_W // 2
 
-    min_offset_x = 9999
+    min_dist = 999999
 
     for r in results:
         boxes = r.boxes
@@ -116,10 +116,10 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
                 cy = y1 + (bh // 2)
                 area = bw * bh
 
-                # เลือกต้นไม้ที่อยู่กึ่งกลางสายตามากที่สุด
-                offset_x = abs(cx - center_screen_x)
-                if offset_x < min_offset_x:
-                    min_offset_x = offset_x
+                # เลือกต้นไม้ที่อยู่ใกล้ตัวละครมากที่สุด (วัดจากโคนต้น = กลางล่างของกล่อง)
+                dist = math.hypot(cx - char_x, y2 - char_y)
+                if dist < min_dist:
+                    min_dist = dist
                     best_x = cx
                     best_y = cy
                     best_area = area
@@ -576,4 +576,203 @@ def main():
 
     while True:
         round_count += 1
-        print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}"
+        print(f"\n{'='*20} เริ่มต้นลูปฟาร์มรอบที่ {round_count} {'='*20}")
+
+        print("[1] ขั้นตอนที่ 1: กวาดสายตา 360 องศาค้นหาเป้าหมาย...")
+        candidate_found = False
+        target_x = 0
+        target_y = 0
+        tree_info = ""
+
+        for step in range(8):
+            scr = get_screen()
+            found, src, cx, cy, area, h = detect_target_tree(scr)
+            if found:
+                candidate_found = True
+                target_x = cx
+                target_y = cy
+                tree_info = src
+                print(f"\n[🌲] พบเป้าหมายที่มุม {step + 1}/8! [{src}] (X={cx}, Y={cy}, สูง={h}px)")
+                break
+            else:
+                print(f"[🔄] สแกนมุม {step + 1}/8 -> หมุนขวาต่อ...")
+                rotate_view_right(dist=180)
+
+        if not candidate_found:
+            print("\n" + "=" * 55)
+            print("[!] ล้มเหลว: กวาดหา 360 องศาแล้วไม่พบต้นไม้ -> หยุดการทำงาน")
+            print("=" * 55)
+            return
+
+        scr_check = get_screen()
+        bag_status = check_bag_status(scr_check)
+        if bag_status == "full":
+            print("\n[!] กระเป๋าเต็ม (ตรวจพบ กระเป๋าส้ม.png) -> หยุดทำงาน")
+            return
+        else:
+            print("[✓] สถานะกระเป๋าปกติ (กระเป๋า.png)")
+
+        axe_ready = check_axe_status(scr_check)
+        if not axe_ready:
+            print("\n" + "=" * 60)
+            print("[!] ล้มเหลว: ตรวจพบ ขวานแดง.png (ขวานพัง/หลอดแดง) -> สั่งหยุดทำงานทันที")
+            print("=" * 60)
+            return
+        else:
+            print("[✓] ขวานพร้อมใช้งาน (ขวาน.png) -> ดำเนินการวิเคราะห์เฉดสีและเดินต่อได้")
+
+        print("\n[2] ขั้นตอนที่ 2: ล็อกหน้าจอนิ่งสนิท...")
+        time.sleep(0.6)
+        zoom_scr = get_screen()
+        is_real_tree, tree_type_name, matched_file, zoom_detail, nearest_x, tree_box = optical_zoom_analysis(zoom_scr, target_x)
+        
+        if is_real_tree:
+            target_x = nearest_x
+        else:
+            tree_type_name = tree_info
+
+        print(f"[✓] ยืนยันเป้าหมาย [{tree_type_name}] สำเร็จ เตรียมเดินเข้าหาต้นนี้...")
+        time.sleep(0.5)
+
+        print("\n[3] ขั้นตอนที่ 3: เดินเข้าหาตามแนวระนาบปกติ...")
+        reached_close = False
+
+        for step in range(35):
+            curr_scr = get_screen()
+            if check_pickup_hand(curr_scr)[0]:
+                print("\n[🎯] พบปุ่มรูปมือขึ้นมาแล้ว -> ประชิดเป้าหมายเรียบร้อย!")
+                reached_close = True
+                break
+
+            found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+
+            if found_step:
+                print(f"[*] ก้าวที่ {step + 1:02d} | สั่งหยุดนิ่ง 5 วินาที เพื่อให้ฉากนิ่งสนิทก่อนจับภาพ...")
+                time.sleep(5.0)
+
+                curr_scr = get_screen()
+                found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                if not found_step:
+                    continue
+
+                if step >= 3 and cur_h >= 220:
+                    print(f"\n[🎯] วิเคราะห์ลำต้นขยายใหญ่เต็มหน้าจอ ({cur_h}px) -> ถึงระยะฟันสมบูรณ์!")
+                    reached_close = True
+                    break
+
+                center_x = SCREEN_W // 2
+                err_x = cur_x - center_x
+                if abs(err_x) > DEADZONE_3D_X:
+                    print(f"[*] ตรวจภาพสด: เบี่ยง {err_x:+4d}px -> กำลังหมุนกล้องปรับมุม...")
+                    turn_camera_3d(cur_x)
+                    time.sleep(0.35)
+                    curr_scr = get_screen()
+                    found_step, _, cur_x, cur_y, cur_area, cur_h = detect_target_tree(curr_scr)
+                    if not found_step:
+                        continue
+
+                walk_deg, direction_label = calculate_walk_angle(cur_x)
+                offset_center = cur_x - center_x
+                print(f"[*] ก้าวที่ {step + 1:02d} | ทิศ: {direction_label:12s} | พิกัดสด: ({cur_x:4d}, {cur_y:3d}) | "
+                      f"สูง: {cur_h:3d}px | เบี่ยง: {offset_center:+4d}px")
+
+                walk_direction(walk_deg, duration_ms=480)
+                time.sleep(0.35)
+
+            else:
+                print(f"\n[⚠️] ก้าวที่ {step + 1:02d} | เป้าหมายหลุดมุมมองชั่วคราว!")
+                target_reacquired = False
+
+                for wait_sec in range(5, 0, -1):
+                    print(f"[*] กำลังค้นหาเป้าหมายใหม่... นับถอยหลังเหลือ {wait_sec} วินาที")
+                    time.sleep(1.0)
+                    retry_scr = get_screen()
+                    found_retry, _, rx, ry, _, rh = detect_target_tree(retry_scr)
+                    if found_retry:
+                        print(f"[🌲] พบเป้าหมายอีกครั้งที่พิกัด X={rx}, Y={ry}!")
+                        target_reacquired = True
+                        break
+
+                if not target_reacquired:
+                    print("\n[!] ล้มเหลว: ไม่พบเป้าหมายหลังครบกำหนด 5 วินาที -> หยุดการทำงาน")
+                    return
+
+        print(f"\n[4] ขั้นตอนที่ 4: ดันตัวประชิดโคนต้นไม้ แล้วเคาะตี 1 ครั้ง...")
+        walk_direction(0, duration_ms=280)
+        time.sleep(0.15)
+        tap(1100, 530)
+        time.sleep(1.0)
+
+        target_scr = get_screen()
+        is_target_ready, is_tree_dead, result_log = check_target_name_match(target_scr)
+        print(f"[*] ผลการสแกน: {result_log}")
+
+        if not is_target_ready and not is_tree_dead:
+            print("\n[🔄] ชื่อไม่ตรงกับ Name_Rubber_tree.png -> ย้อนกลับไปขั้นตอนที่ 1 เพื่อกวาดหา 360 องศาใหม่...")
+            rotate_view_right(dist=220)
+            continue
+
+        print(f"\n[5] ขั้นตอนที่ 5: ยืนยันต้นยางพาราถูกต้อง! เริ่มต้นฟันต่อเนื่อง...")
+        hits = 0
+        hand_detected = False
+        hx, hy = 0, 0
+
+        while hits < 45:
+            hits += 1
+            tap(1100, 530)
+            time.sleep(0.35)
+
+            if hits % 2 == 0:
+                chk_scr = get_screen()
+                finished, fx, fy = check_tree_cut_finished(chk_scr)
+                if finished:
+                    hand_detected = True
+                    hx, hy = fx, fy
+                    print(f"\n[🖐️] ฟันต้นไม้ล้มแล้ว! (ตีไป {hits} ครั้ง)")
+                    break
+
+        print("[⏳] ฟันเสร็จสมบูรณ์ -> หยุดนิ่ง 2 วินาที...")
+        time.sleep(2.0)
+
+        final_chk = get_screen()
+        is_hand, hand_x, hand_y, _ = check_pickup_hand(final_chk)
+        if is_hand:
+            hx, hy = hand_x, hand_y
+
+        if hx == 0 and hy == 0:
+            hx, hy = 670, 430
+            print(f"[*] ตรวจไม่พบไอคอนรูปมือ -> ใช้พิกัดสำรอง ({hx}, {hy}) ทันที")
+
+        print(f"[🖐️] ทำการกดปุ่มรูปมือ 2 ครั้ง ที่พิกัด ({hx}, {hy})...")
+        tap(hx, hy)
+        time.sleep(0.3)
+        tap(hx, hy)
+        time.sleep(1.2)
+
+        print("\n[6] ขั้นตอนที่ 6: ตรวจสอบหน้าต่างไอเทม (ปุ่มสีเขียว / คำว่า 'เก็บ')...")
+        dialog_scr = get_screen()
+        pick_all_ready, px, py = check_pick_all_dialog(dialog_scr)
+
+        if not pick_all_ready:
+            print("\n" + "=" * 60)
+            print("[!] ล้มเหลว: กดรูปมือแล้วรอ 1.2 วิ ไม่ขึ้นคำว่า 'เก็บ' ที่ปุ่มสีเขียว -> สั่งหยุดทำงาน")
+            print("=" * 60)
+            return
+
+        print(f"[📦] ตรวจพบคำว่า 'Pick All' สมบูรณ์! ทำการแตะเก็บไอเทมที่ ({px}, {py})...")
+        tap(px, py)
+        time.sleep(0.25)
+        tap(px, py)
+
+        print("[✓] เก็บไอเทมเข้าตัวเสร็จสมบูรณ์!")
+
+        print("\n[7] ขั้นตอนที่ 7: รอนิ่ง 5 วินาทีเพื่อให้โมเดลในฉากหายสนิท...")
+        for wait_sec in range(5, 0, -1):
+            print(f"[*] พักรอ... เหลือ {wait_sec} วิ")
+            time.sleep(1.0)
+
+        print("[🚀] เริ่มต้นสแกนหาต้นต่อไปทันที...\n")
+
+
+if __name__ == "__main__":
+    main()
