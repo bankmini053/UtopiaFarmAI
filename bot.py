@@ -87,41 +87,47 @@ def init_yolo():
 
 
 def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "tree"]):
+    """
+    ตรวจจับวัตถุ 3D ด้วย YOLOv8 Nano คืนค่า Bounding Box ของเป้าหมายที่เด่นที่สุด
+    """
     if yolo_model is None or screen is None:
         return False, "ไม่พบ", 0, 0, 0, 0
 
     results = yolo_model(screen, verbose=False, conf=0.40)
-    best = None
-    best_score = -1
+    best_x, best_y, best_area, best_h = 0, 0, 0, 0
+    best_label = ""
+    center_screen_x = SCREEN_W // 2
+
+    min_offset_x = 9999
 
     for r in results:
-        for box in r.boxes:
-            cls_name = r.names[int(box.cls[0])]
+        boxes = r.boxes
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            cls_name = r.names[cls_id]
             conf = float(box.conf[0])
 
-            if not (len(target_classes) == 0 or
-                    any(tc.lower() in cls_name.lower() for tc in target_classes)):
-                continue
+            # กรองเฉพาะ Class วัตถุที่ต้องการ
+            if any(tc.lower() in cls_name.lower() for tc in target_classes) or len(target_classes) == 0:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                bw = x2 - x1
+                bh = y2 - y1
+                cx = x1 + (bw // 2)
+                cy = y1 + (bh // 2)
+                area = bw * bh
 
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            bw, bh = x2 - x1, y2 - y1
-            cx, cy = x1 + bw // 2, y1 + bh // 2
+                # เลือกต้นไม้ที่อยู่กึ่งกลางสายตามากที่สุด
+                offset_x = abs(cx - center_screen_x)
+                if offset_x < min_offset_x:
+                    min_offset_x = offset_x
+                    best_x = cx
+                    best_y = cy
+                    best_area = area
+                    best_h = bh
+                    best_label = f"YOLO:{cls_name} ({conf:.2f})"
 
-            # ยิ่งใกล้ตัว: โคนต้น (y2) ต่ำบนจอ + กล่องสูง
-            near_score = (y2 / SCREEN_H) * 0.6 + (bh / SCREEN_H) * 0.4
-
-            # ลดคะแนนเล็กน้อยถ้าอยู่ไกลขอบจอ กันเลือกต้นที่ต้องหมุนกล้องมาก
-            side_penalty = abs(cx - SCREEN_W // 2) / SCREEN_W * 0.15
-
-            score = near_score - side_penalty
-
-            if score > best_score:
-                best_score = score
-                best = (f"YOLO:{cls_name} ({conf:.2f})", cx, cy, bw * bh, bh)
-
-    if best is not None:
-        label, cx, cy, area, bh = best
-        return True, label, cx, cy, area, bh
+    if best_label != "":
+        return True, best_label, best_x, best_y, best_area, best_h
 
     return False, "ไม่พบ", 0, 0, 0, 0
 
