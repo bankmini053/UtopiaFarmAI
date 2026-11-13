@@ -6,12 +6,13 @@ import cv2
 import numpy as np
 import pytesseract
 
-ROOT_SU = "/system/xbin/su"
+# ใช้คำสั่ง su แบบมาตรฐานของระบบ
+ROOT_SU = "su"
 TMP_PATH = "/data/local/tmp/screen.png"
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
 
-# พิกัดปุ่มตกปลา (ไอคอนคันเบ็ดขวาล่าง)
-FISH_BTN = (1075, 530)
+# พิกัดปุ่มตี / ปุ่มตกปลา (วงกลมใหญ่ขวาล่าง อิงตามจอ 1600x720)
+FISH_BTN = (1280, 550)
 
 def run_cmd(cmd):
     subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
@@ -30,6 +31,7 @@ def get_screen():
         img = cv2.imread(TMP_PATH)
         if img is not None:
             h, w = img.shape[:2]
+            # หากภาพถูกแคปมาเป็นแนวตั้ง ให้หมุนตามเข็มนาฬิกาเป็นแนวนอน
             if h > w:
                 img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
             return img
@@ -38,16 +40,24 @@ def get_screen():
 def check_minigame_active(screen):
     """
     ตรวจสอบว่าหลอดมินิเกมตกปลาด้านบนจอแสดงขึ้นมาหรือยัง
-    โซนแถบเส้น: X=400 ถึง 880, Y=45 ถึง 95
+    คำนวณโซนแถบเส้นมินิเกมตามสเกล 1600x720: X=500 ถึง 1100, Y=50 ถึง 130
     """
     if screen is None:
         return False, None
-    bar_roi = screen[45:95, 400:880]
+    h, w = screen.shape[:2]
+    # ปรับสเกลให้อัตโนมัติตามขนาดจอจริง
+    scale_x = w / 1600.0
+    scale_y = h / 720.0
+    
+    x1, x2 = int(500 * scale_x), int(1100 * scale_x)
+    y1, y2 = int(50 * scale_y), int(130 * scale_y)
+    
+    bar_roi = screen[y1:y2, x1:x2]
     gray = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2GRAY)
     
     # ตรวจสอบเส้นสีขาวหรือวงกลมปลา
     white_pixels = np.sum(gray > 210)
-    if white_pixels > 120:
+    if white_pixels > 150:
         return True, bar_roi
     return False, None
 
@@ -60,10 +70,8 @@ def analyze_fish_and_bar(bar_roi):
         return False, 999
 
     hsv = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2GRAY)
 
     # 1. ค้นหาไอคอนวงกลมปลาสีทอง/เหลือง
-    # HSV สีเหลือง/ทองของปลา
     lower_gold = np.array([15, 100, 150])
     upper_gold = np.array([35, 255, 255])
     mask_fish = cv2.inRange(hsv, lower_gold, upper_gold)
@@ -72,7 +80,7 @@ def analyze_fish_and_bar(bar_roi):
     fish_contours, _ = cv2.findContours(mask_fish, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if fish_contours:
         largest_cnt = max(fish_contours, key=cv2.contourArea)
-        if cv2.contourArea(largest_cnt) > 25:
+        if cv2.contourArea(largest_cnt) > 20:
             M = cv2.moments(largest_cnt)
             if M["m00"] != 0:
                 fish_x = int(M["m10"] / M["m00"])
@@ -85,33 +93,37 @@ def analyze_fish_and_bar(bar_roi):
     cursor_x = None
     cursor_contours, _ = cv2.findContours(mask_cursor, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if cursor_contours:
-        # หาวัตถุสีขาวที่มีความแคบแนวตั้ง (เส้นชี้)
         for cnt in cursor_contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            if h >= 12 and w <= 25:
+            if h >= 12 and w <= 30:
                 cursor_x = x + (w // 2)
                 break
 
     # 3. คำนวณระยะห่างระหว่างเส้นชี้กับปลา
     if fish_x is not None and cursor_x is not None:
         diff = abs(fish_x - cursor_x)
-        # ถ้าระยะห่างน้อยกว่า 35px แสดงว่าเส้นอยู่ใกล้/ทับตัวปลาพอดี -> กดดึงได้
-        if diff <= 38:
+        # ถ้าระยะห่างน้อยกว่า 45px แสดงว่าเส้นอยู่ใกล้/ทับตัวปลาพอดี -> กดดึงได้
+        if diff <= 45:
             return True, diff
         return False, diff
 
-    # ถ้าตรวจไม่เจอลวดลายสี ให้ใช้ตำแหน่งพิกเซลสว่างสุดแทน
     return False, 999
 
 def check_fish_reward(screen):
     """
-    ตรวจสอบชื่อปลาที่ได้รับบริเวณกลางจอขวา (ข้อความชื่อปลา +1)
+    ตรวจสอบชื่อปลาที่ได้รับบริเวณกลางจอ
     """
     if screen is None:
         return ""
 
-    # โซนข้อความชื่อปลาเด้งขึ้นมา: X=620 ถึง 980, Y=450 ถึง 620
-    roi = screen[450:620, 620:980]
+    h, w = screen.shape[:2]
+    scale_x = w / 1600.0
+    scale_y = h / 720.0
+    
+    x1, x2 = int(750 * scale_x), int(1200 * scale_x)
+    y1, y2 = int(450 * scale_y), int(630 * scale_y)
+    
+    roi = screen[y1:y2, x1:x2]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
     
@@ -121,7 +133,7 @@ def check_fish_reward(screen):
 def main():
     print("=" * 60)
     print("[🎣] เริ่มต้นระบบบอทตกปลาอัตโนมัติ (Utopia: Origin)")
-    print(f"[*] พิกัดปุ่มตกปลา: {FISH_BTN}")
+    print(f"[*] พิกัดปุ่มตกปลา (ปุ่มตี): {FISH_BTN}")
     print("=" * 60)
     time.sleep(2)
 
@@ -138,12 +150,12 @@ def main():
         tap(FISH_BTN[0], FISH_BTN[1])
         time.sleep(1.5)
 
-        # 2. รอปลากินเบ็ด (ตรวจจับหลอดมินิเกมสีขาวด้านบน)
+        # 2. รอปลากินเบ็ด
         print("[⏳] กำลังรอปลากินเบ็ด...")
         minigame_started = False
         wait_start = time.time()
 
-        while time.time() - wait_start < 20.0:  # รอปลากินเบ็ดไม่เกิน 20 วินาที
+        while time.time() - wait_start < 20.0:
             scr = get_screen()
             is_active, bar_roi = check_minigame_active(scr)
             if is_active:
@@ -156,9 +168,9 @@ def main():
             print("[⚠️] ปลารอบนี้ไม่กินเบ็ด หรือเหยื่อหมด -> ลองกดเหวี่ยงใหม่")
             continue
 
-        # 3. ลูปมินิเกม: ตรวจจับเส้นสีขาวเข้าใกล้ตัวปลาแล้วกดย้ำ
+        # 3. ลูปมินิเกม: กดย้ำเมื่อเส้นขาวทับปลา
         minigame_timer = time.time()
-        while time.time() - minigame_timer < 12.0:  # มินิเกมนานประมาณ 5-8 วินาที
+        while time.time() - minigame_timer < 12.0:
             scr = get_screen()
             is_active, bar_roi = check_minigame_active(scr)
             if not is_active:
@@ -169,11 +181,11 @@ def main():
             if should_pull:
                 print(f"[🎯] เส้นทับตัวปลาพอดี (ต่างกัน {diff}px) -> กดดึงเบ็ด!")
                 tap(FISH_BTN[0], FISH_BTN[1])
-                time.sleep(0.12)  # หน่วงสั้นๆ กันกดย้ำรัวเกินไป
+                time.sleep(0.12)
             else:
                 time.sleep(0.04)
 
-        # 4. หยุดรอแอนิเมชันปลาขึ้นมา และตรวจเช็กชื่อปลา
+        # 4. หยุดรอแอนิเมชันและตรวจเช็กชื่อปลา
         time.sleep(1.2)
         end_scr = get_screen()
         reward_text = check_fish_reward(end_scr)
@@ -181,8 +193,6 @@ def main():
         if reward_text:
             print(f"[📦] ได้รับไอเทม: '{reward_text}'")
             total_fish_count += 1
-            
-            # ตรวจสอบว่าใช่ Elfish หรือไม่
             if any(k in reward_text.lower() for k in ["elfish", "eife", "el"]):
                 elfish_count += 1
                 print(f"\n[🌟] ตกได้ Elfish สำเร็จ! (สะสมรวม: {elfish_count} ตัว)")
@@ -190,9 +200,8 @@ def main():
             print("[*] ตกปลาสำเร็จรอบนี้")
 
         print(f"[📊] สถิติ: ตกได้ทั้งหมด {total_fish_count} ตัว | Elfish: {elfish_count} ตัว")
-        
-        # รอนิ่ง 2 วินาทีก่อนเริ่มเหวี่ยงเบ็ดรอบถัดไป
         time.sleep(2.0)
 
 if __name__ == "__main__":
     main()
+
