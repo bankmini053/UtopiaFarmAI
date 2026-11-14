@@ -135,7 +135,13 @@ def main():
     print("[🎣] เริ่มต้นระบบบอทตกปลาอัตโนมัติ (Utopia: Origin)")
     print(f"[*] พิกัดปุ่มตกปลา (ปุ่มตี): {FISH_BTN}")
     print("=" * 60)
-    time.sleep(2)
+
+    # นับถอยหลัง 10 วินาทีเพื่อให้เวลาสลับหน้าจอเข้าเกม
+    print("\n[⏱️] กรุณาสลับหน้าจอกลับเข้าเกม Utopia: Origin...")
+    for remaining in range(10, 0, -1):
+        print(f"[*] บอทจะเริ่มทำงานในอีก {remaining} วินาที...", end="\r", flush=True)
+        time.sleep(1.0)
+    print("\n[🚀] หมดเวลาเตรียมตัว -> เริ่มต้นระบบบอทตกปลาทันที!\n")
 
     elfish_count = 0
     total_fish_count = 0
@@ -204,4 +210,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
