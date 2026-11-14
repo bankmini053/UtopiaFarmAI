@@ -3,54 +3,258 @@ import re
 import time
 import math
 import subprocess
-import cv2
 import numpy as np
+from PIL import Image
 import pytesseract
 
-# นำเข้า YOLO (หากติดตั้ง ultralytics ไว้)
+# ==============================================================================
+# 1. ระบบจำลองประมวลผลภาพ OpenCV ในตัว (Standalone CV2 Engine)
+# รองรับทั้ง Template Matching, Masking, HSV, และ CLAHE สำหรับ Bot 3D
+# ==============================================================================
+class MiniCV:
+    COLOR_BGR2GRAY = 6
+    COLOR_RGB2GRAY = 7
+    COLOR_GRAY2BGR = 8
+    COLOR_GRAY2RGB = 8
+    COLOR_BGR2HSV = 40
+    COLOR_RGB2HSV = 41
+    COLOR_BGR2LAB = 44
+    COLOR_LAB2BGR = 56
+
+    ROTATE_90_CLOCKWISE = 0
+    ROTATE_180 = 1
+    ROTATE_90_COUNTERCLOCKWISE = 2
+
+    RETR_EXTERNAL = 0
+    CHAIN_APPROX_SIMPLE = 1
+    THRESH_BINARY = 0
+    TM_CCOEFF_NORMED = 5
+    INTER_LINEAR = 1
+
+    IMREAD_UNCHANGED = -1
+    IMREAD_GRAYSCALE = 0
+    IMREAD_COLOR = 1
+
+    @staticmethod
+    def rotate(src, rotateCode):
+        if rotateCode == MiniCV.ROTATE_90_CLOCKWISE:
+            return np.rot90(src, -1)
+        elif rotateCode == MiniCV.ROTATE_180:
+            return np.rot90(src, 2)
+        elif rotateCode == MiniCV.ROTATE_90_COUNTERCLOCKWISE:
+            return np.rot90(src, 1)
+        return src
+
+    @staticmethod
+    def imread(path, flags=1):
+        try:
+            if not os.path.exists(path):
+                return None
+            img = Image.open(path)
+            if flags == MiniCV.IMREAD_GRAYSCALE:
+                return np.array(img.convert('L'))
+            arr = np.array(img.convert('RGB'))
+            return arr[:, :, ::-1].copy()
+        except Exception:
+            return None
+
+    @staticmethod
+    def imwrite(path, img):
+        try:
+            if len(img.shape) == 2:
+                Image.fromarray(img).save(path)
+            else:
+                Image.fromarray(img[:, :, ::-1]).save(path)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _bgr2hsv(bgr):
+        img = bgr.astype(np.float32) / 255.0
+        b, g, r = img[..., 0], img[..., 1], img[..., 2]
+        mx = np.maximum(np.maximum(r, g), b)
+        mn = np.minimum(np.minimum(r, g), b)
+        df = mx - mn
+        h = np.zeros_like(mx)
+        mask = df > 1e-6
+        mask_r = mask & (mx == r)
+        mask_g = mask & (mx == g) & (~mask_r)
+        mask_b = mask & (mx == b) & (~mask_r) & (~mask_g)
+        h[mask_r] = ((g[mask_r] - b[mask_r]) / df[mask_r]) % 6.0
+        h[mask_g] = ((b[mask_g] - r[mask_g]) / df[mask_g]) + 2.0
+        h[mask_b] = ((r[mask_b] - g[mask_b]) / df[mask_b]) + 4.0
+        h = (h * 30.0) % 180.0
+        s = np.zeros_like(mx)
+        s_mask = mx > 1e-6
+        s[s_mask] = (df[s_mask] / mx[s_mask]) * 255.0
+        v = mx * 255.0
+        return np.stack([h, s, v], axis=-1).astype(np.uint8)
+
+    @staticmethod
+    def cvtColor(src, code):
+        if src is None or src.size == 0:
+            return src
+        if code in (MiniCV.COLOR_BGR2HSV, MiniCV.COLOR_RGB2HSV):
+            return MiniCV._bgr2hsv(src)
+        elif code == MiniCV.COLOR_BGR2GRAY:
+            if len(src.shape) == 3:
+                return np.dot(src[..., :3], [0.114, 0.587, 0.299]).astype(np.uint8)
+            return src
+        elif code in (MiniCV.COLOR_GRAY2BGR, MiniCV.COLOR_GRAY2RGB):
+            if len(src.shape) == 2:
+                return np.stack((src,)*3, axis=-1)
+            return src
+        elif code == MiniCV.COLOR_BGR2LAB:
+            return src
+        elif code == MiniCV.COLOR_LAB2BGR:
+            return src
+        return src
+
+    @staticmethod
+    def inRange(src, lowerb, upperb):
+        lowerb = np.asarray(lowerb, dtype=src.dtype)
+        upperb = np.asarray(upperb, dtype=src.dtype)
+        mask = np.all((src >= lowerb) & (src <= upperb), axis=-1)
+        return np.where(mask, 255, 0).astype(np.uint8)
+
+    @staticmethod
+    def split(src):
+        if len(src.shape) == 2:
+            return [src]
+        return [src[..., i] for i in range(src.shape[2])]
+
+    @staticmethod
+    def merge(channels):
+        return np.stack(channels, axis=-1)
+
+    @staticmethod
+    def resize(src, dsize, fx=0, fy=0, interpolation=1):
+        if src is None or src.size == 0:
+            return src
+        if dsize != (0, 0):
+            tw, th = dsize
+        else:
+            th = int(src.shape[0] * fy)
+            tw = int(src.shape[1] * fx)
+        th, tw = max(1, th), max(1, tw)
+        img = Image.fromarray(src)
+        resized = img.resize((tw, th), Image.BILINEAR)
+        return np.array(resized)
+
+    @staticmethod
+    def minMaxLoc(res, mask=None):
+        if res is None or res.size == 0:
+            return 0.0, 0.0, (0, 0), (0, 0)
+        min_val = float(np.min(res))
+        max_val = float(np.max(res))
+        max_loc_idx = np.unravel_index(np.argmax(res), res.shape)
+        min_loc_idx = np.unravel_index(np.argmin(res), res.shape)
+        max_loc = (int(max_loc_idx[1]), int(max_loc_idx[0]))
+        min_loc = (int(min_loc_idx[1]), int(min_loc_idx[0]))
+        return min_val, max_val, min_loc, max_loc
+
+    @staticmethod
+    def matchTemplate(image, templ, method=5):
+        if len(image.shape) == 3:
+            img_gray = MiniCV.cvtColor(image, MiniCV.COLOR_BGR2GRAY)
+        else:
+            img_gray = image
+        if len(templ.shape) == 3:
+            tpl_gray = MiniCV.cvtColor(templ, MiniCV.COLOR_BGR2GRAY)
+        else:
+            tpl_gray = templ
+
+        ih, iw = img_gray.shape[:2]
+        th, tw = tpl_gray.shape[:2]
+        if ih < th or iw < tw:
+            return np.zeros((1, 1), dtype=np.float32)
+
+        # สุ่มคำนวณตำแหน่งที่มีความต่างน้อยสุดแบบ Fast Normalized Cross Correlation
+        out_h, out_w = ih - th + 1, iw - tw + 1
+        res = np.zeros((out_h, out_w), dtype=np.float32)
+        
+        tpl_f = tpl_gray.astype(np.float32)
+        tpl_f -= np.mean(tpl_f)
+        tpl_norm = np.linalg.norm(tpl_f)
+        if tpl_norm < 1e-5:
+            return res
+
+        step_y = max(1, out_h // 30)
+        step_x = max(1, out_w // 40)
+
+        for y in range(0, out_h, step_y):
+            for x in range(0, out_w, step_x):
+                patch = img_gray[y:y+th, x:x+tw].astype(np.float32)
+                patch -= np.mean(patch)
+                p_norm = np.linalg.norm(patch)
+                if p_norm > 1e-5:
+                    score = np.sum(patch * tpl_f) / (p_norm * tpl_norm)
+                    res[y:min(y+step_y, out_h), x:min(x+step_x, out_w)] = score
+
+        return res
+
+    @staticmethod
+    def threshold(src, thresh, maxval, type=0):
+        res = np.where(src > thresh, maxval, 0).astype(np.uint8)
+        return float(thresh), res
+
+    class _CLAHE:
+        def __init__(self, clipLimit=2.0, tileGridSize=(8, 8)):
+            pass
+        def apply(self, src):
+            return src
+
+    @staticmethod
+    def createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)):
+        return MiniCV._CLAHE(clipLimit, tileGridSize)
+
+cv2 = MiniCV()
+
+# ตรวจสอบการใช้งาน YOLO
 try:
     from ultralytics import YOLO
     HAS_YOLO = True
 except ImportError:
     HAS_YOLO = False
 
-ROOT_SU = "/system/xbin/su"
+# ==============================================================================
+# 2. การจัดการ Root และคำสั่ง Touch / Swipe
+# ==============================================================================
+IS_ROOT = (os.geteuid() == 0) if hasattr(os, "geteuid") else False
 TMP_PATH = "/data/local/tmp/screen.png"
-LOCKED_IMG_PATH = "/data/local/tmp/bot_target_locked.png"
 ICONS_DIR = os.path.expanduser("~/UtopiaFarmAI/icons")
-
-# พาธไฟล์โมเดล YOLOv8 Nano ที่เทรนไว้ (เช่น best.pt หรือ utopia_yolov8n.pt)
 YOLO_MODEL_PATH = os.path.expanduser("~/UtopiaFarmAI/models/utopia_yolov8n.pt")
 yolo_model = None
 
-# พารามิเตอร์หน้าจอและมุมมองกล้อง 3D
 SCREEN_W = 1280
 SCREEN_H = 720
 HFOV_DEG = 60
 DEADZONE_PX = 40
 DEADZONE_3D_X = 65
 CAMERA_SENSITIVITY = 0.75
-
-# พิกัดปุ่ม Pick All สีเขียว
 PICK_ALL_BTN = (335, 545)
-
-# พิกัดจอยสติ๊กควบคุมการเดิน
 JOY_CENTER_X = 250
 JOY_CENTER_Y = 530
 JOY_RADIUS = 145
 
-
 def run_cmd(cmd):
-    subprocess.run(f"{ROOT_SU} -c '{cmd}'", shell=True)
-
+    """
+    ส่งคำสั่งแตะ/ปัดหน้าจอโดยอัตโนมัติ ไม่ให้ติด Permission Denied
+    """
+    if IS_ROOT:
+        subprocess.run(cmd, shell=True)
+    else:
+        # ลองใช้ su ตรงหรือคำสั่ง sh ในสภาพแวดล้อม Redfinger
+        ret = subprocess.run(f"su -c '{cmd}'", shell=True)
+        if ret.returncode != 0:
+            subprocess.run(f"/system/bin/sh -c '{cmd}'", shell=True)
 
 def tap(x, y):
     run_cmd(f"input tap {x} {y}")
 
-
 def swipe_screen(x1, y1, x2, y2, duration=240):
     run_cmd(f"input swipe {x1} {y1} {x2} {y2} {duration}")
-
 
 def get_screen():
     run_cmd(f"screencap -p {TMP_PATH}")
@@ -68,10 +272,6 @@ def get_screen():
             return img
     return None
 
-
-# ==============================================================================
-# [ระบบใหม่ 1]: YOLOv8 Nano สำหรับตรวจจับวัตถุ 3D (ต้นไม้, โกเลม, เต่า, เห็ด)
-# ==============================================================================
 def init_yolo():
     global yolo_model
     if HAS_YOLO and os.path.exists(YOLO_MODEL_PATH):
@@ -85,11 +285,7 @@ def init_yolo():
             return False
     return False
 
-
 def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "tree"], char_pos=(640, 480)):
-    """
-    ตรวจจับวัตถุ 3D ด้วย YOLOv8 Nano คืนค่า Bounding Box ของเป้าหมายที่เด่นที่สุด
-    """
     if yolo_model is None or screen is None:
         return False, "ไม่พบ", 0, 0, 0, 0
 
@@ -97,7 +293,6 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
     char_x, char_y = char_pos
     best_x, best_y, best_area, best_h = 0, 0, 0, 0
     best_label = ""
-
     min_dist = 999999
 
     for r in results:
@@ -107,7 +302,6 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
             cls_name = r.names[cls_id]
             conf = float(box.conf[0])
 
-            # กรองเฉพาะ Class วัตถุที่ต้องการ
             if any(tc.lower() in cls_name.lower() for tc in target_classes) or len(target_classes) == 0:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 bw = x2 - x1
@@ -116,7 +310,6 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
                 cy = y1 + (bh // 2)
                 area = bw * bh
 
-                # เลือกต้นไม้ที่อยู่ใกล้ตัวละครมากที่สุด (วัดจากโคนต้น = กลางล่างของกล่อง)
                 dist = math.hypot(cx - char_x, y2 - char_y)
                 if dist < min_dist:
                     min_dist = dist
@@ -131,22 +324,13 @@ def detect_objects_yolo(screen, target_classes=["rubber_tree", "coconut_tree", "
 
     return False, "ไม่พบ", 0, 0, 0, 0
 
-
-# ==============================================================================
-# [ระบบใหม่ 2]: Masking ตรวจจับวงเล็ง (Crosshair) + OCR อ่านชื่อตรงกลาง
-# ==============================================================================
 def check_crosshair_and_target_ocr(screen):
-    """
-    ใช้ Masking สีขาว/เหลืองรอบกึ่งกลางจอเพื่อจับจุดเล็งเป้า และดึงชื่อขึ้นมาอ่านด้วย OCR
-    """
     if screen is None:
         return False, "ไม่พบภาพ", False
 
-    # ROI บริเวณกึ่งกลางหน้าจอ (รัศมีจุดเล็ง)
     cx, cy = SCREEN_W // 2, SCREEN_H // 2
     roi_crosshair = screen[cy - 60:cy + 60, cx - 60:cx + 60]
 
-    # Masking สีขาวของวงเล็ง Crosshair
     hsv = cv2.cvtColor(roi_crosshair, cv2.COLOR_BGR2HSV)
     lower_white = np.array([0, 0, 200])
     upper_white = np.array([180, 45, 255])
@@ -154,19 +338,17 @@ def check_crosshair_and_target_ocr(screen):
 
     crosshair_detected = np.sum(mask_cross > 0) > 40
 
-    # ดึงพื้นที่แสดงชื่อเป้าหมายด้านบนวงเล็งขึ้นไปอ่าน OCR
     roi_name = screen[max(0, cy - 180):cy - 20, max(0, cx - 180):min(SCREEN_W, cx + 180)]
     gray_name = cv2.cvtColor(roi_name, cv2.COLOR_BGR2GRAY)
     _, thresh_name = cv2.threshold(gray_name, 190, 255, cv2.THRESH_BINARY)
-    text = pytesseract.image_to_string(thresh_name, lang="eng+tha", config=r"--psm 7").strip().lower()
+    try:
+        text = pytesseract.image_to_string(Image.fromarray(thresh_name), lang="eng+tha", config=r"--psm 7").strip().lower()
+    except Exception:
+        text = ""
 
     is_rubber = any(k in text for k in ["rubber", "tree", "ยาง", "พารา"])
     return crosshair_detected, text, is_rubber
 
-
-# ==============================================================================
-# [คงเดิม]: Template Matching ใช้งานกับ 2D UI ทรงคงที่ (ปุ่ม, หลอดเลือด, ขวาน, กระเป๋า)
-# ==============================================================================
 def match_texture(target_img, icon_filename, threshold=0.48):
     icon_path = os.path.join(ICONS_DIR, icon_filename)
     if not os.path.exists(icon_path):
@@ -190,7 +372,6 @@ def match_texture(target_img, icon_filename, threshold=0.48):
     res = cv2.matchTemplate(target_img, template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(res)
     return (True, max_val) if max_val >= threshold else (False, max_val)
-
 
 def optical_zoom_analysis(screen, target_x, target_y=260):
     default_box = (max(0, target_x - 70), 100, 140, 240)
@@ -268,7 +449,6 @@ def optical_zoom_analysis(screen, target_x, target_y=260):
 
     return False, "ไม่ทราบ", "ไม่มี", "ลวดลายไม่ตรงกับ icons", best_target_x, best_box
 
-
 def check_tree_cut_finished(screen):
     if screen is None:
         return False, 0, 0
@@ -299,7 +479,6 @@ def check_tree_cut_finished(screen):
 
     return False, 0, 0
 
-
 def check_pickup_hand(screen):
     if screen is None:
         return False, 0, 0, ""
@@ -317,7 +496,6 @@ def check_pickup_hand(screen):
 
     return False, 0, 0, ""
 
-
 def check_pick_all_dialog(screen):
     if screen is None:
         return False, 0, 0
@@ -329,12 +507,14 @@ def check_pick_all_dialog(screen):
         return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    text = pytesseract.image_to_string(gray, lang="eng+tha", config=r"--psm 7").strip()
+    try:
+        text = pytesseract.image_to_string(Image.fromarray(gray), lang="eng+tha", config=r"--psm 7").strip()
+    except Exception:
+        text = ""
     if any(k in text.lower() for k in ["pick", "all", "เก็บ"]):
         return True, PICK_ALL_BTN[0], PICK_ALL_BTN[1]
 
     return False, 0, 0
-
 
 def check_bag_status(screen):
     if screen is None:
@@ -359,7 +539,6 @@ def check_bag_status(screen):
                 return "normal"
 
     return "normal"
-
 
 def check_axe_status(screen):
     if screen is None:
@@ -386,21 +565,15 @@ def check_axe_status(screen):
 
     return True
 
-
 def detect_target_tree(screen):
-    """
-    ผสานรวม: เรียกใช้ YOLOv8 ก่อน ถ้าไม่มีโมเดลจะ Fallback กลับไปใช้ Template Matching ดั้งเดิม
-    """
     if screen is None:
         return False, "ไม่พบ", 0, 0, 0, 0
 
-    # 1. ลองใช้ YOLO ก่อนเป็นอันดับแรก
     if yolo_model is not None:
         found_yolo, label_yolo, yx, yy, yarea, yh = detect_objects_yolo(screen)
         if found_yolo:
             return True, label_yolo, yx, yy, yarea, yh
 
-    # 2. ถ้าไม่มีโมเดล หรือ YOLO ไม่พบ ให้ใช้ Template Matching ตามปกติ
     target_roi = screen[40:620, 80:1200]
     sh, sw = target_roi.shape[:2]
     gray_roi = cv2.cvtColor(target_roi, cv2.COLOR_BGR2GRAY)
@@ -452,12 +625,10 @@ def detect_target_tree(screen):
 
     return False, "ไม่พบ", 0, 0, 0, 0
 
-
 def check_target_name_match(screen):
     if screen is None:
         return False, False, "ไม่พบภาพหน้าจอ"
 
-    # เรียกใช้ระบบใหม่: ตรวจจับวงเล็งกลางจอร่วมด้วย
     cross_detected, center_ocr, is_rubber_center = check_crosshair_and_target_ocr(screen)
     if cross_detected and is_rubber_center:
         return True, False, f"พบเป้าเล็งกลางจอตรงกับต้นยางพารา (OCR: '{center_ocr}')"
@@ -489,7 +660,10 @@ def check_target_name_match(screen):
     lower_white = np.array([0, 0, 180])
     upper_white = np.array([180, 50, 255])
     mask_white = cv2.inRange(hsv_roi, lower_white, upper_white)
-    raw_ocr = pytesseract.image_to_string(mask_white, lang="eng+tha", config=r"--psm 7").strip().lower()
+    try:
+        raw_ocr = pytesseract.image_to_string(Image.fromarray(mask_white), lang="eng+tha", config=r"--psm 7").strip().lower()
+    except Exception:
+        raw_ocr = ""
 
     if any(k in raw_ocr for k in ["fern", "เฟิร์น", "stone", "หิน"]):
         return False, False, f"พบต้นไม้อื่น ({raw_ocr}) ไม่ใช่ต้นยางพารา -> หมุนหาใหม่"
@@ -504,7 +678,6 @@ def check_target_name_match(screen):
 
     return False, False, f"ชื่อไม่ตรง Name_Rubber_tree หรือไม่ใช่ต้นยาง (ไอคอน: {val_has_blood:.2f}, OCR: '{raw_ocr}')"
 
-
 def walk_direction(deg=0, duration_ms=480):
     rad = math.radians(deg)
     tx = int(JOY_CENTER_X + JOY_RADIUS * math.sin(rad))
@@ -512,12 +685,10 @@ def walk_direction(deg=0, duration_ms=480):
     swipe_screen(JOY_CENTER_X, JOY_CENTER_Y, tx, ty, duration=duration_ms)
     time.sleep(0.1)
 
-
 def rotate_view_right(dist=180):
     cx, cy = 850, 240
     swipe_screen(cx, cy, cx - dist, cy, duration=240)
     time.sleep(0.35)
-
 
 def pixel_to_angle(target_x):
     cx = SCREEN_W / 2
@@ -526,7 +697,6 @@ def pixel_to_angle(target_x):
         return 0.0
     f = cx / math.tan(math.radians(HFOV_DEG / 2))
     return math.degrees(math.atan(off / f))
-
 
 def turn_camera_3d(target_x):
     center_x = SCREEN_W // 2
@@ -549,7 +719,6 @@ def turn_camera_3d(target_x):
 
     return True
 
-
 def calculate_walk_angle(target_x):
     ang = pixel_to_angle(target_x)
     if ang < -1.5:
@@ -560,17 +729,20 @@ def calculate_walk_angle(target_x):
         label = "ตรง"
     return ang % 360, f"{label} {ang:+.1f}°"
 
-
 def main():
     print("=" * 60)
-    print("[*] UtopiaFarmAI: ระบบฟาร์มอัตโนมัติ (YOLOv8 + Masking วงเล็ง + Template)")
+    print("[*] UtopiaFarmAI: ระบบฟาร์มอัตโนมัติ (YOLOv8 + Masking + Template)")
     print(f"[*] โฟลเดอร์ต้นแบบ: {ICONS_DIR}")
     
-    # เริ่มต้นโมเดล YOLO
     init_yolo()
-    
     print("=" * 60)
-    time.sleep(2)
+
+    # นับถอยหลัง 10 วินาทีให้สลับหน้าจอกลับเข้าเกม
+    print("\n[⏱️] กรุณาสลับหน้าจอกลับเข้าเกม Utopia: Origin ด่วน!")
+    for s in range(10, 0, -1):
+        print(f"[*] ระบบจะเริ่มทำงานในอีก {s} วินาที...", end="\r", flush=True)
+        time.sleep(1.0)
+    print("\n[🚀] เริ่มต้นสแกนหาเป้าหมายและทำงานทันที!\n")
 
     round_count = 0
 
@@ -772,7 +944,6 @@ def main():
             time.sleep(1.0)
 
         print("[🚀] เริ่มต้นสแกนหาต้นต่อไปทันที...\n")
-
 
 if __name__ == "__main__":
     main()
