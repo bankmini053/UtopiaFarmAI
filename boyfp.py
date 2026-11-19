@@ -6,17 +6,20 @@ boyfp.py - บอทตกปลา (แตะหน้าจอจริง, �
   MODE = "adb"    รันบนคอม คุมมือถือ/คลาวด์โฟนผ่าน ADB (แนะนำ ลง OpenCV ง่าย)
   MODE = "local"  รันบนตัวมือถือที่รูทแล้ว (Termux + su)
 
-ไอคอนที่ต้องมีใน GitHub (โฟลเดอร์ icons/ ใน repo) - ครอปจากหน้าจอเครื่องจริง:
-  rod_green.png  เบ็ดสีเขียว (พร้อมใช้)      rod_red.png  เบ็ดสีแดง (ต้องซ่อม)
-  repair.png     ปุ่มซ่อมเบ็ด
-  cast.png       ปุ่มคันเบ็ดฝั่งขวา วงแหวนบาง (ตอนตก/รอปลา)
-  reel.png       ปุ่มคันเบ็ดวงแหวนเรืองแสง (ปลากินเบ็ด -> กด)
+ไอคอน: บอทหาในโฟลเดอร์ icons/ ข้างไฟล์นี้ก่อน ถ้าไม่มีจะโหลดทั้งโฟลเดอร์ icons/ จาก GitHub (GITHUB_REPO)
+ชื่อไฟล์ที่บอทมองหา (ใช้ชื่อมีคำนี้ก็ได้ เช่น rod_green.png, เบ็ดเขียว_green.png):
+  rod_green  เบ็ดสีเขียว    rod_red  เบ็ดสีแดง    repair  ปุ่มซ่อม
+  cast       ปุ่มคันเบ็ดวงแหวนบาง (ตอนตก/รอปลา)
+  reel       ปุ่มคันเบ็ดเรืองแสง (ปลากิน -> กด)
+  bait       ข้อความ/ไอคอน "Brand-new Type of Bait -1" (ไม่บังคับ ใช้ยืนยันว่าติดปลา)
+ถ้าชื่อไฟล์ใน repo ไม่ตรง ให้แก้ ICON_FILES ด้านล่าง
 
 มินิเกม (ปลาวิ่งบนเส้นด้านบน + ขีดขาว) อ่านจากสีโดยตรง ไม่ต้องใช้ไอคอน:
-  วงแหวนเหลือง = ปลา (ปลายหมุดชี้ตำแหน่งบนเส้น)   แถบขาวบนเส้น = โซนที่ต้องกด
+  วงแหวนเหลือง = ปลา   แถบขาวบนเส้น = โซนที่ต้องกด   แถบเปลี่ยนเป็นสีแดง = กดพลาด
 """
 import os
 import sys
+import json
 import time
 import subprocess
 import urllib.request
@@ -29,11 +32,23 @@ MODE = "adb"                  # "adb" หรือ "local"
 ADB_SERIAL = ""               # เช่น "192.168.1.50:5555" ปล่อยว่าง = เครื่องเดียว
 COUNTDOWN = 10                # วินาทีให้สลับเกม
 
-GITHUB_RAW = "https://raw.githubusercontent.com/USER/REPO/main/icons"   # <- ใส่ repo ของคุณ
-ICON_DIR = "icons"            # โฟลเดอร์แคชในเครื่อง
+GITHUB_REPO = "bankmini053/UtopiaFarmAI"   # ดึงไอคอนจากโฟลเดอร์ icons/ ของ repo นี้
+GITHUB_BRANCH = "main"
+ICON_DIR = "icons"            # โฟลเดอร์ไอคอนในเครื่อง (ใช้เป็นแคชด้วย)
 FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกครั้งที่เปิดบอท
-REQUIRED = ["rod_green", "rod_red", "repair", "cast"]
-OPTIONAL = ["reel"]
+# ถ้าชื่อไฟล์ไม่ตรง ระบุเองได้ เช่น {"cast": "fishing_btn.png", "reel": "fishing_glow.png"}
+ICON_FILES = {}
+REQUIRED = ["rod_green", "rod_red", "repair", "cast", "reel"]
+OPTIONAL = ["bait"]
+# คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
+ALIASES = {
+    "rod_green": ["rod_green", "green", "เขียว"],
+    "rod_red": ["rod_red", "red", "แดง"],
+    "repair": ["repair", "fix", "ซ่อม"],
+    "cast": ["cast", "fishing_btn", "rod_btn", "idle"],
+    "reel": ["reel", "bite", "glow", "hook"],
+    "bait": ["bait", "เหยื่อ"],
+}
 
 THRESHOLD = 0.80              # ความเหมือนภาพของไอคอน 0-1
 
@@ -42,12 +57,16 @@ TAP_DELAY = 0.08              # หน่วงจากสั่งแตะถ
 USER_OFFSET = 0.0             # กดช้าไป -> เพิ่มค่า / กดเร็วไป -> ลดค่า (เช่น 0.05)
 INNER_MARGIN = 0.10           # ไม่กดใกล้ขอบแถบขาว (สัดส่วนความกว้างแถบ)
 HIT_COOLDOWN = 1.0            # กันกดซ้ำหลังกดแล้ว (วินาที)
+MAX_MISS = 3                  # กดพลาด (แถบแดง) ครบกี่ครั้งต่อปลา 1 ตัว ให้หยุดบอท
+MISS_COOLDOWN = 1.0           # นับพลาดห่างกันอย่างน้อยกี่วินาที (กันนับซ้ำจากแถบแดงค้าง)
 MINIGAME_LOST_AFTER = 1.5     # ไม่เห็นปลานานเท่านี้ = จบมินิเกม (ได้ปลาแล้ว)
 HIT_BUTTON = None             # พิกัดปุ่มกด เช่น (2212, 960) ถ้า None จะหาจาก cast.png
 HIT_BUTTON_FRAC = (0.80, 0.75)  # สำรอง: ตำแหน่งปุ่มเป็นสัดส่วนจอ (ปุ่มคันเบ็ดขวา)
 
 # ---- ขั้นตอนอื่น ----
 ACTION_COOLDOWN = 1.5         # พักหลังกดปุ่มตก/ซ่อม/reel
+BITE_TIMEOUT = 90             # ตกแล้วรอปลากินนานสุดกี่วินาที เกินนี้กลับไปเช็กเบ็ดใหม่
+NO_ROD_ASSUME_FISHING = 8     # ไม่เจอไอคอนเบ็ดนานเท่านี้ ถือว่ากำลังตกอยู่แล้ว (แถบล่างถูกซ่อน)
 DEBUG = True
 # ==========================================
 
@@ -57,27 +76,71 @@ def log(*a):
         print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
-# ---------- ไอคอนจาก GitHub ----------
-def load_icons():
+# ---------- ไอคอน (ในเครื่อง + GitHub) ----------
+IMG_EXT = (".png", ".jpg", ".jpeg")
+
+
+def download_icons_from_github():
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/icons?ref={GITHUB_BRANCH}"
+    try:
+        req = urllib.request.Request(api, headers={"User-Agent": "boyfp-bot"})
+        items = json.load(urllib.request.urlopen(req, timeout=20))
+    except Exception as e:
+        log("โหลดรายชื่อไอคอนจาก GitHub ไม่ได้:", e)
+        return
     os.makedirs(ICON_DIR, exist_ok=True)
-    icons = {}
-    for name in REQUIRED + OPTIONAL:
-        path = os.path.join(ICON_DIR, name + ".png")
+    for it in items:
+        name = it.get("name", "")
+        if it.get("type") != "file" or not name.lower().endswith(IMG_EXT):
+            continue
+        path = os.path.join(ICON_DIR, name)
         if FORCE_DOWNLOAD or not os.path.exists(path):
-            url = f"{GITHUB_RAW}/{name}.png"
             try:
-                log("โหลด", url)
-                urllib.request.urlretrieve(url, path)
+                urllib.request.urlretrieve(it["download_url"], path)
+                log("โหลด", name)
             except Exception as e:
-                if not os.path.exists(path):
-                    if name in OPTIONAL:
-                        log("ข้าม", name)
-                        continue
-                    sys.exit(f"โหลด {name}.png ไม่ได้ ({e})\nเช็ก GITHUB_RAW หรือวางไฟล์เองใน {ICON_DIR}/")
-        img = cv2.imread(path)
+                log("โหลดไม่ได้", name, e)
+
+
+def resolve_icon(logical, files):
+    """หาไฟล์ของไอคอนชื่อ logical จากรายชื่อไฟล์ในโฟลเดอร์"""
+    if logical in ICON_FILES:
+        return ICON_FILES[logical] if ICON_FILES[logical] in files else None
+    stems = {os.path.splitext(f)[0].lower(): f for f in files}
+    if logical in stems:
+        return stems[logical]
+    for kw in ALIASES.get(logical, []):
+        for stem, f in stems.items():
+            if kw.lower() in stem:
+                return f
+    return None
+
+
+def list_icon_files():
+    if not os.path.isdir(ICON_DIR):
+        return []
+    return sorted(f for f in os.listdir(ICON_DIR) if f.lower().endswith(IMG_EXT))
+
+
+def load_icons():
+    files = list_icon_files()
+    if any(resolve_icon(n, files) is None for n in REQUIRED) or FORCE_DOWNLOAD:
+        download_icons_from_github()
+        files = list_icon_files()
+    icons, missing = {}, []
+    for name in REQUIRED + OPTIONAL:
+        f = resolve_icon(name, files)
+        if f is None:
+            (missing if name in REQUIRED else []).append(name)
+            continue
+        img = cv2.imread(os.path.join(ICON_DIR, f))
         if img is None:
-            sys.exit(f"อ่านไฟล์ {path} ไม่ได้")
+            sys.exit(f"อ่านไฟล์ {f} ไม่ได้")
         icons[name] = img
+        log(f"ไอคอน {name} <- {f}")
+    if missing:
+        sys.exit(f"หาไอคอนไม่เจอ: {missing}\nไฟล์ที่มีใน {ICON_DIR}/: {files}\n"
+                 f"แก้ชื่อไฟล์ให้มีคำว่าชื่อไอคอน หรือกำหนดใน ICON_FILES")
     return icons
 
 
@@ -105,6 +168,7 @@ ROI = {
     "reel": (0.60, 0.45, 1.0, 1.0),     # ปุ่มเรืองแสงตอนปลากิน
     "rod_green": (0.0, 0.65, 1.0, 1.0),  # แถบล่าง
     "rod_red": (0.0, 0.65, 1.0, 1.0),
+    "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
 }
 _scale_cache = {}
 
@@ -168,6 +232,22 @@ def detect_minigame(frame):
     return pin_x, x0 + best_run[0], x0 + best_run[1]
 
 
+def detect_miss(frame):
+    """แถบบนเส้นกลายเป็นสีแดง = กดพลาด คืน True/False"""
+    H, W = frame.shape[:2]
+    x0, x1 = int(0.30 * W), int(0.70 * W)
+    y0, y1 = int(0.12 * H), int(0.17 * H)
+    hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    h, s_, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    red = ((h <= 8) | (h >= 172)) & (s_ >= 110) & (v >= 110)
+    cols = red.sum(axis=0) >= max(2, int(0.004 * H))
+    run = best = 0
+    for c in cols:
+        run = run + 1 if c else 0
+        best = max(best, run)
+    return best >= 0.02 * W
+
+
 class Timing:
     """ตัดสินใจจังหวะกด จากตำแหน่งปลาที่อ่านได้เป็นช่วงๆ"""
     def __init__(self, tap_delay=0.08, user_offset=0.0, inner=0.10, cooldown=1.0):
@@ -227,10 +307,17 @@ def main():
     log("เริ่มทำงาน (Ctrl+C เพื่อหยุด)")
 
     timing = Timing(TAP_DELAY, USER_OFFSET, INNER_MARGIN, HIT_COOLDOWN)
+    state = "IDLE"            # IDLE = เช็กเบ็ด/ตก, WAIT_BITE = รอปลากิน
+    cast_time = 0.0
     last_action = 0.0
-    last_seen_game = 0.0      # เวลาล่าสุดที่เห็นมินิเกม
+    last_seen_game = 0.0
     in_game = False
-    catches = 0
+    misses = 0
+    last_miss = -9.0
+    last_bait = -9.0
+    last_bait_check = 0.0
+    no_rod_since = None
+    caught = 0
 
     while True:
         t0 = time.time()
@@ -247,7 +334,27 @@ def main():
             if not in_game:
                 log("เข้ามินิเกม")
                 in_game = True
+                misses = 0
             last_seen_game = t
+            state = "IDLE"
+
+            # กดพลาด -> แถบเป็นสีแดง
+            if detect_miss(frame) and t - last_miss > MISS_COOLDOWN:
+                last_miss = t
+                misses += 1
+                log(f"กดพลาด (แถบแดง) ครั้งที่ {misses}/{MAX_MISS}")
+                if misses >= MAX_MISS:
+                    print(f"\nจับปลาไม่ได้ (กดพลาด {misses} ครั้ง) หยุดบอท", flush=True)
+                    sys.exit(1)
+
+            # เหยื่อ -1 = ติดปลาแล้ว (เช็กทุก 1 วินาที ไม่ให้หน่วงจังหวะกด)
+            if "bait" in icons and t - last_bait_check > 1.0:
+                last_bait_check = t
+                bs, _, _ = find(frame, icons, "bait")
+                if bs >= THRESHOLD and t - last_bait > 3.0:
+                    last_bait = t
+                    log("เหยื่อ -1 (ติดปลาแล้ว)")
+
             pin_x, bar_l, bar_r = mg
             if timing.update(t, t - t0, pin_x, bar_l, bar_r):
                 dev.tap(*hit_point(frame, icons))
@@ -258,26 +365,41 @@ def main():
                 continue          # ภาพกะพริบตอนกดโดน รอดูก่อน
             in_game = False
             timing.reset()
-            catches += 1
+            caught += 1
             last_action = time.time()
-            log(f"จบมินิเกม (รอบที่ {catches})")
+            log(f"จบมินิเกม จับปลาแล้ว (รอบที่ {caught}) พลาด {misses} ครั้ง")
+            misses = 0
 
         if time.time() - last_action < ACTION_COOLDOWN:
             continue
 
-        # ===== 3.1) ปุ่มเปลี่ยนรูป แล้วกด (ถ้ามี reel.png) =====
-        if "reel" in icons:
-            rs, rx, ry = find(frame, icons, "reel")
+        # ===== ปลากินเบ็ด (ปุ่มเรืองแสง) -> กด =====
+        rs, rx, ry = find(frame, icons, "reel")
+        if rs >= THRESHOLD:
             cs0, _, _ = find(frame, icons, "cast")
-            if rs >= THRESHOLD and rs > cs0:
-                log("ปุ่มเปลี่ยนแล้ว -> กด")
+            if rs > cs0:
+                log("ปลากิน (ปุ่มเรืองแสง) -> กด")
                 dev.tap(rx, ry)
                 last_action = time.time()
+                state = "WAIT_BITE"
+                cast_time = time.time()
                 continue
 
-        # ===== 2) เช็กเบ็ด เขียว/แดง =====
+        # ===== รอปลากิน =====
+        if state == "WAIT_BITE":
+            if time.time() - cast_time > BITE_TIMEOUT:
+                log("รอปลาเกินเวลา กลับไปเช็กเบ็ด")
+                state = "IDLE"
+            continue
+
+        # ===== 1) เช็กเบ็ด เขียว/แดง ก่อนตกทุกครั้ง =====
         gs, _, _ = find(frame, icons, "rod_green")
         rds, _, _ = find(frame, icons, "rod_red")
+        if gs >= THRESHOLD or rds >= THRESHOLD:
+            no_rod_since = None
+        elif no_rod_since is None:
+            no_rod_since = time.time()
+
         if rds >= THRESHOLD and rds > gs:
             ps, px, py = find(frame, icons, "repair")
             if ps >= THRESHOLD:
@@ -288,14 +410,23 @@ def main():
                 log("เบ็ดแดง แต่ไม่เจอปุ่มซ่อม")
             continue
 
-        # ===== 3) เบ็ดเขียว -> กดตก (เบ็ดหายไป = กำลังตก) =====
+        # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
         if gs >= THRESHOLD:
             cs, cx, cy = find(frame, icons, "cast")
             if cs >= THRESHOLD:
                 log("เบ็ดเขียว -> กดตกปลา")
                 dev.tap(cx, cy)
                 last_action = time.time()
-        # ไม่เจออะไร = กำลังตก/รอปลากิน วนอ่านภาพต่อ
+                state = "WAIT_BITE"
+                cast_time = time.time()
+            continue
+
+        # ไม่เจอไอคอนเบ็ดเลย: แถบล่างซ่อมอยู่ = น่าจะกำลังตกอยู่แล้ว
+        if no_rod_since and time.time() - no_rod_since > NO_ROD_ASSUME_FISHING:
+            log("ไม่เจอไอคอนเบ็ด -> ถือว่ากำลังตกอยู่ รอปลากิน")
+            state = "WAIT_BITE"
+            cast_time = time.time()
+            no_rod_since = None
 
 
 if __name__ == "__main__":
@@ -303,4 +434,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nหยุดบอท")
-  
