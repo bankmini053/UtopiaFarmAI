@@ -8,7 +8,7 @@ boyfp.py - บอทตกปลา (แตะหน้าจอจริง, �
 
 ไอคอน: บอทหาในโฟลเดอร์ icons/ ข้างไฟล์นี้ก่อน ถ้าไม่มีจะโหลดทั้งโฟลเดอร์ icons/ จาก GitHub (GITHUB_REPO)
 ชื่อไฟล์ที่บอทมองหา (ใช้ชื่อมีคำนี้ก็ได้ เช่น rod_green.png, เบ็ดเขียว_green.png):
-  rod_green  เบ็ดสีเขียว    rod_red  เบ็ดสีแดง    repair  ปุ่มซ่อม
+  rod_green  เบ็ดสีเขียว    rod_red  เบ็ดสีแดง    repair  ปุ่มซ่อม (ไม่บังคับ แต่ถ้าเบ็ดแดงแล้วไม่มี บอทจะหยุด)
   cast       ปุ่มคันเบ็ดวงแหวนบาง (ตอนตก/รอปลา)
   reel       ปุ่มคันเบ็ดเรืองแสง (ปลากิน -> กด)
   bait       ข้อความ/ไอคอน "Brand-new Type of Bait -1" (ไม่บังคับ ใช้ยืนยันว่าติดปลา)
@@ -28,9 +28,9 @@ import cv2
 import numpy as np
 
 # ================= CONFIG =================
-MODE = "adb"                  # "adb" หรือ "local"
+MODE = "auto"                 # "auto" = เจอ /system/bin/screencap ใช้ local (รันบนมือถือ) ไม่งั้น adb
 ADB_SERIAL = ""               # เช่น "192.168.1.50:5555" ปล่อยว่าง = เครื่องเดียว
-COUNTDOWN = 100               # วินาทีให้สลับเกม
+COUNTDOWN = 60                # วินาทีให้สลับเกม (1 นาที)
 
 GITHUB_REPO = "bankmini053/UtopiaFarmAI"   # ดึงไอคอนจากโฟลเดอร์ icons/ ของ repo นี้
 GITHUB_BRANCH = "main"
@@ -38,8 +38,8 @@ ICON_DIR = "icons"            # โฟลเดอร์ไอคอนในเ
 FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกครั้งที่เปิดบอท
 # ถ้าชื่อไฟล์ไม่ตรง ระบุเองได้ เช่น {"cast": "fishing_btn.png", "reel": "fishing_glow.png"}
 ICON_FILES = {}
-REQUIRED = ["rod_green", "rod_red", "repair", "cast", "reel"]
-OPTIONAL = ["bait"]
+REQUIRED = ["rod_green", "rod_red", "cast", "reel"]
+OPTIONAL = ["repair", "bait"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
     "rod_green": ["rod_green", "green", "เขียว"],
@@ -145,9 +145,17 @@ def load_icons():
 
 
 # ---------- ควบคุมเครื่อง ----------
+def _use_local():
+    if MODE == "local":
+        return True
+    if MODE == "adb":
+        return False
+    return os.path.exists("/system/bin/screencap")   # รันบนมือถือ (Termux)
+
+
 class Device:
     def _run(self, cmd):
-        if MODE == "adb":
+        if not _use_local():
             base = ["adb"] + (["-s", ADB_SERIAL] if ADB_SERIAL else [])
             return subprocess.run(base + ["exec-out"] + cmd, capture_output=True).stdout
         return subprocess.run(["su", "-c", " ".join(cmd)], capture_output=True).stdout
@@ -401,6 +409,9 @@ def main():
             no_rod_since = time.time()
 
         if rds >= THRESHOLD and rds > gs:
+            if "repair" not in icons:
+                print("\nเบ็ดแดง แต่ยังไม่มีไอคอนปุ่มซ่อม (repair.png) หยุดบอท", flush=True)
+                sys.exit(1)
             ps, px, py = find(frame, icons, "repair")
             if ps >= THRESHOLD:
                 log("เบ็ดแดง -> ซ่อม")
@@ -434,3 +445,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nหยุดบอท")
+      
