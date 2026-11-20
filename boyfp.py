@@ -30,7 +30,7 @@ import numpy as np
 # ================= CONFIG =================
 MODE = "adb"                  # "adb" หรือ "local"
 ADB_SERIAL = ""               # เช่น "192.168.1.50:5555" ปล่อยว่าง = เครื่องเดียว
-COUNTDOWN = 10                # วินาทีให้สลับเกม
+COUNTDOWN = 100               # วินาทีให้สลับเกม
 
 GITHUB_REPO = "bankmini053/UtopiaFarmAI"   # ดึงไอคอนจากโฟลเดอร์ icons/ ของ repo นี้
 GITHUB_BRANCH = "main"
