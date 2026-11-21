@@ -21,6 +21,7 @@ boyfp.py - บอทตกปลา (แตะหน้าจอจริง, �
 import os
 import sys
 import json
+import struct
 import time
 import subprocess
 import urllib.request
@@ -55,6 +56,9 @@ ALIASES = {
 THRESHOLD = 0.80              # ความเหมือนภาพของไอคอน 0-1
 REEL_MIN = 0.70               # ปุ่มเรืองแสง: คะแนนขั้นต่ำ (ภาพเรืองแสงกะพริบ คะแนนแกว่ง)
 REEL_MARGIN = 0.05            # และต้องสูงกว่าคะแนนปุ่มปกติอย่างน้อยเท่านี้
+BITE_RING_MIN = 90            # ปลากิน: วงแสงรอบปุ่มต้องสว่างอย่างน้อยเท่านี้ (0-255) และสว่างกว่าปกติ 1.7 เท่า
+BITE_RING_RATIO = 1.7
+SCREENCAP_RAW = True          # แคปแบบดิบ (ไม่บีบ PNG) เร็วกว่ามาก ถ้าใช้ไม่ได้บอทสลับไป PNG เอง
 
 # ---- มินิเกม ----
 TAP_DELAY = 0.08              # หน่วงจากสั่งแตะถึงเกมรับ (วินาที)
@@ -157,6 +161,31 @@ def _use_local():
     return os.path.exists("/system/bin/screencap")   # รันบนมือถือ (Termux)
 
 
+def parse_raw(data):
+    """screencap แบบดิบ: หัว 12/16 ไบต์ (กว้าง,สูง,รูปแบบ) + พิกเซล RGBA ถ้าขนาดไม่ลงตัว (ภาพขาด) คืน None"""
+    if not data or len(data) < 16:
+        return None
+    w, h = struct.unpack("<II", data[:8])
+    px = w * h * 4
+    hdr = len(data) - px
+    if not (0 < w < 8000 and 0 < h < 8000) or hdr not in (12, 16):
+        return None
+    arr = np.frombuffer(data, np.uint8, count=px, offset=hdr).reshape(h, w, 4)
+    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+
+
+def ring_p90(frame, btn):
+    """ความสว่างของวงแหวนรอบปุ่ม (เปอร์เซ็นไทล์ 90) ปุ่มเรืองแสง = วงขาวสว่าง ปุ่มปกติ = วงเทาเข้ม"""
+    cx, cy, r = btn
+    pad = int(1.3 * r)
+    x0, y0 = max(0, int(cx - pad)), max(0, int(cy - pad))
+    g = cv2.cvtColor(frame[y0:int(cy + pad), x0:int(cx + pad)], cv2.COLOR_BGR2GRAY)
+    yy, xx = np.ogrid[:g.shape[0], :g.shape[1]]
+    d = np.hypot(xx - (cx - x0), yy - (cy - y0))
+    m = (d >= 0.80 * r) & (d <= 1.12 * r)
+    return float(np.percentile(g[m], 90)) if m.any() else 0.0
+
+
 class Device:
     def _run(self, cmd):
         if not _use_local():
@@ -164,7 +193,21 @@ class Device:
             return subprocess.run(base + ["exec-out"] + cmd, capture_output=True).stdout
         return subprocess.run(["su", "-c", " ".join(cmd)], capture_output=True).stdout
 
+    raw_ok = SCREENCAP_RAW
+    raw_seen = False
+    raw_fail = 0
+
     def screen(self):
+        if self.raw_ok:
+            frame = parse_raw(self._run(["screencap"]))
+            if frame is not None:
+                self.raw_seen = True
+                return frame
+            self.raw_fail += 1
+            if not self.raw_seen and self.raw_fail >= 5:
+                self.raw_ok = False
+                log("แคปแบบดิบใช้ไม่ได้ สลับไปใช้ PNG")
+            return None
         data = self._run(["screencap", "-p"])
         if not data or b"IEND" not in data[-16:]:
             return None                      # ภาพขาดครึ่ง (แคปไม่ทัน) ข้ามเฟรมนี้
@@ -390,6 +433,10 @@ def main():
     green_while_wait = 0
     last_warn = 0.0
     caught = 0
+    btn = None                # (x, y, รัศมี) ของปุ่มคันเบ็ดฝั่งขวา
+    ring_hist = []
+    bite_tapped = -99.0
+    last_rod_check = 0.0
 
     while True:
         t0 = time.time()
@@ -398,6 +445,41 @@ def main():
             time.sleep(0.05)      # แคปไม่สมบูรณ์ ลองเฟรมถัดไปทันที
             continue
         t = time.time()
+
+        # ===== ทางด่วนรอปลากิน: ดูแค่วงแสงรอบปุ่ม (เร็วกว่าเทียบรูป) =====
+        if state == "WAIT_BITE" and not in_game and time.time() - bite_tapped > 6.0:
+            if btn is None:
+                cs_, bx, by = find(frame, icons, "cast")
+                if cs_ >= THRESHOLD and "cast" in _scale_cache:
+                    btn = (bx, by, _scale_cache["cast"] * icons["cast"].shape[1] / 2)
+                    log("เจอปุ่มคันเบ็ด ใช้วงแสงจับปลากิน")
+            if btn is not None and time.time() - cast_time >= 0.5:
+                p = ring_p90(frame, btn)
+                ring_hist = (ring_hist + [p])[-20:]
+                base = min(ring_hist)
+                if p >= max(BITE_RING_MIN, base * BITE_RING_RATIO) and len(ring_hist) >= 3:
+                    log(f"ปลากิน (วงแสง {p:.0f} / ปกติ {base:.0f}) -> กดทันที")
+                    dev.tap(btn[0], btn[1])
+                    bite_tapped = last_action = time.time()
+                    ring_hist = []
+                    continue
+                now = time.time()
+                if now - cast_time > BITE_TIMEOUT:
+                    log("รอปลาเกินเวลา กลับไปเช็กเบ็ดใหม่")
+                    state = "IDLE"
+                elif now - last_rod_check > 1.0:
+                    last_rod_check = now
+                    ri = detect_rod(frame)
+                    if ri and ri[0] == "green" and now - cast_time > 3:
+                        green_while_wait += 1
+                        if green_while_wait >= 3:
+                            log("แถบล่างกลับมาโดยไม่มีปลา -> ตกใหม่")
+                            state = "IDLE"
+                            green_while_wait = 0
+                    else:
+                        green_while_wait = 0
+                if state == "WAIT_BITE":
+                    continue
 
         # ===== 4) มินิเกม: ปลาวิ่งบนเส้น เมื่อถึงขีดขาวให้กด =====
         mg = detect_minigame(frame)
@@ -532,6 +614,8 @@ def main():
             state = "WAIT_BITE"
             cast_time = time.time()
             green_while_wait = 0
+            ring_hist = []
+            bite_tapped = -99.0
             continue
 
         # ===== ไม่เห็นแถบล่าง =====
