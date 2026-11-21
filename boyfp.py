@@ -9,7 +9,8 @@ boyfp.py - บอทตกปลา (แตะหน้าจอจริง, �
 ไอคอน: บอทหาในโฟลเดอร์ icons/ ข้างไฟล์นี้ก่อน ถ้าไม่มีจะโหลดทั้งโฟลเดอร์ icons/ จาก GitHub (GITHUB_REPO)
 ชื่อไฟล์ที่บอทมองหา (ใช้ชื่อมีคำนี้ก็ได้ เช่น rod_green.png, เบ็ดเขียว_green.png):
   rod_green  เบ็ดสีเขียว    rod_red  เบ็ดสีแดง    repair  ปุ่มซ่อม (ไม่บังคับ แต่ถ้าเบ็ดแดงแล้วไม่มี บอทจะหยุด)
-  cast       ปุ่มคันเบ็ดวงแหวนบาง (ตอนตก/รอปลา)
+  sword      ปุ่มดาบฝั่งขวา (ตอนแถบล่างยังอยู่ กดเพื่อเริ่มตก)
+  cast       ปุ่มคันเบ็ดวงแหวนบาง (ตอนตก/รอปลา และใช้กดจังหวะมินิเกม)
   reel       ปุ่มคันเบ็ดเรืองแสง (ปลากิน -> กด)
   bait       ข้อความ/ไอคอน "Brand-new Type of Bait -1" (ไม่บังคับ ใช้ยืนยันว่าติดปลา)
 ถ้าชื่อไฟล์ใน repo ไม่ตรง ให้แก้ ICON_FILES ด้านล่าง
@@ -39,7 +40,7 @@ FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกคร�
 # ถ้าชื่อไฟล์ไม่ตรง ระบุเองได้ เช่น {"cast": "fishing_btn.png", "reel": "fishing_glow.png"}
 ICON_FILES = {}
 REQUIRED = ["cast", "reel"]
-OPTIONAL = ["rod_green", "rod_red", "repair", "bait"]
+OPTIONAL = ["sword", "rod_green", "rod_red", "repair", "bait"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
     "rod_green": ["rod_green", "green", "เขียว"],
@@ -48,6 +49,7 @@ ALIASES = {
     "cast": ["cast", "fishing_btn", "rod_btn", "idle"],
     "reel": ["reel", "bite", "glow", "hook"],
     "bait": ["bait", "เหยื่อ"],
+    "sword": ["sword", "ดาบ", "dagger", "attack"],
 }
 
 THRESHOLD = 0.80              # ความเหมือนภาพของไอคอน 0-1
@@ -176,6 +178,7 @@ class Device:
 ROI = {
     "cast": (0.60, 0.45, 1.0, 1.0),     # ปุ่มคันเบ็ดฝั่งขวา
     "reel": (0.60, 0.45, 1.0, 1.0),     # ปุ่มเรืองแสงตอนปลากิน
+    "sword": (0.60, 0.45, 1.0, 1.0),    # ปุ่มดาบ (ตอนแถบล่างยังอยู่)
     "rod_green": (0.0, 0.65, 1.0, 1.0),  # แถบล่าง
     "rod_red": (0.0, 0.65, 1.0, 1.0),
     "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
@@ -195,7 +198,7 @@ def find(frame, icons, name):
     tpl = icons[name]
     if name in _scale_cache:
         scales = [_scale_cache[name] * k for k in (0.85, 0.92, 1.0, 1.08, 1.15)]
-    elif name in ("cast", "reel"):
+    elif name in ("cast", "reel", "sword"):
         sc0 = BUTTON_FRAC_H * H / tpl.shape[1]
         scales = [sc0 * k for k in np.geomspace(0.55, 1.8, 12)]
     else:
@@ -512,13 +515,17 @@ def main():
 
         # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
         if rod == "green":
-            cs, cx, cy = find(frame, icons, "cast")
-            if cs >= THRESHOLD:
-                log("เบ็ดเขียว -> กดตก (cast.png)")
-                tx, ty = cx, cy
-            else:
-                # หาปุ่ม cast.png ไม่เจอ (ปุ่มขวายังเป็นรูปอื่น) -> กดที่ช่องเบ็ดแทน
-                log(f"เบ็ดเขียว -> ไม่เจอ cast.png (คะแนน {cs:.2f}) กดที่ช่องเบ็ดแทน")
+            # เบ็ดเขียว -> กดปุ่มดาบ -> ปุ่มเปลี่ยนเป็น cast.png และแถบล่างหาย = กำลังตก
+            tx = ty = None
+            for name, label in (("sword", "ปุ่มดาบ"), ("cast", "cast.png")):
+                if name in icons:
+                    sc_, x_, y_ = find(frame, icons, name)
+                    if sc_ >= THRESHOLD:
+                        log(f"เบ็ดเขียว -> กด{label}")
+                        tx, ty = x_, y_
+                        break
+            if tx is None:
+                log("เบ็ดเขียว แต่ไม่เจอปุ่มดาบ/cast.png -> กดที่ช่องเบ็ดแทน")
                 tx, ty = rod_info[1], rod_info[2]
             dev.tap(tx, ty)
             last_action = time.time()
