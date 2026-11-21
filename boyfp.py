@@ -13,6 +13,9 @@ boyfp.py - บอทตกปลา (แตะหน้าจอจริง, �
   cast       ปุ่มคันเบ็ดวงแหวนบาง (ตอนตก/รอปลา และใช้กดจังหวะมินิเกม)
   reel       ปุ่มคันเบ็ดเรืองแสง (ปลากิน -> กด)
   bait       ข้อความ/ไอคอน "Brand-new Type of Bait -1" (ไม่บังคับ ใช้ยืนยันว่าติดปลา)
+  hunger_full / hunger_yellow / hunger_red  หลอดอาหารมุมขวาบน เต็ม(เขียว) / เริ่มหิว(เหลือง) / หิวข้าว(แดง)
+  hunger_danger  กระเพาะสีแดง = อันตรายถึงชีวิต
+  food, food2, food3 ...  ไอคอนอาหารบนแถบล่าง (แดง/อันตราย -> กดจนเต็มก่อนตก ไม่มีอาหารก็ตกต่อ)
 ถ้าชื่อไฟล์ใน repo ไม่ตรง ให้แก้ ICON_FILES ด้านล่าง
 
 มินิเกม (ปลาวิ่งบนเส้นด้านบน + ขีดขาว) อ่านจากสีโดยตรง ไม่ต้องใช้ไอคอน:
@@ -41,17 +44,23 @@ FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกคร�
 # ถ้าชื่อไฟล์ไม่ตรง ระบุเองได้ เช่น {"cast": "fishing_btn.png", "reel": "fishing_glow.png"}
 ICON_FILES = {}
 REQUIRED = ["cast", "reel"]
-OPTIONAL = ["sword", "rod_green", "rod_red", "repair", "bait"]
+HUNGER_NAMES = ("hunger_full", "hunger_yellow", "hunger_red")     # ไอคอนกระเพาะ 3 ระดับที่มีวงแหวน
+OPTIONAL = ["sword", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
-    "rod_green": ["rod_green", "green", "เขียว"],
-    "rod_red": ["rod_red", "red", "แดง"],
+    "rod_green": ["rod_green"],
+    "rod_red": ["rod_red"],
     "repair": ["repair", "fix", "ซ่อม"],
     "cast": ["cast", "fishing_btn", "rod_btn", "idle"],
     "reel": ["reel", "bite", "glow", "hook"],
     "bait": ["bait", "เหยื่อ"],
     "sword": ["sword", "ดาบ", "dagger", "attack"],
+    "hunger_full": ["hunger_full"],
+    "hunger_yellow": ["hunger_yellow"],
+    "hunger_red": ["hunger_red"],
+    "hunger_danger": ["hunger_danger", "danger"],
 }
+FOOD_PREFIX = ("food", "อาหาร")   # ไฟล์อาหารบนแถบล่าง ตั้งชื่อ food.png, food2.png, food3.png ... ได้หลายอัน
 
 THRESHOLD = 0.80              # ความเหมือนภาพของไอคอน 0-1
 REEL_MIN = 0.70               # ปุ่มเรืองแสง: คะแนนขั้นต่ำ (ภาพเรืองแสงกะพริบ คะแนนแกว่ง)
@@ -72,6 +81,10 @@ HIT_BUTTON = None             # พิกัดปุ่มกด เช่น (
 HIT_BUTTON_FRAC = (0.80, 0.75)  # สำรอง: ตำแหน่งปุ่มเป็นสัดส่วนจอ (ปุ่มคันเบ็ดขวา)
 
 # ---- ขั้นตอนอื่น ----
+EAT_COOLDOWN = 2.5            # กดอาหารซ้ำห่างกันอย่างน้อยกี่วินาที
+MAX_EAT_TRIES = 15            # กดอาหารสูงสุดกี่ครั้งต่อรอบ (กินจนกระเพาะเต็ม) เกินนี้ก็ตกต่อ กันค้าง
+FOOD_THRESHOLD = 0.65         # ความเหมือนของไอคอนอาหาร (ช่องอาหารมีพื้นหลัง/ตัวเลขต่างกันได้)
+FOOD_MISSING_WAIT = 60        # ไม่เจออาหารแล้ว รอกี่วินาทีค่อยหาใหม่
 ACTION_COOLDOWN = 1.5         # พักหลังกดปุ่มตก/ซ่อม/reel
 BITE_TIMEOUT = 90             # ตกแล้วรอปลากินนานสุดกี่วินาที เกินนี้กลับไปเช็กเบ็ดใหม่
 NO_ROD_ASSUME_FISHING = 8     # ไม่เจอไอคอนเบ็ดนานเท่านี้ ถือว่ากำลังตกอยู่แล้ว (แถบล่างถูกซ่อน)
@@ -146,6 +159,12 @@ def load_icons():
             sys.exit(f"อ่านไฟล์ {f} ไม่ได้")
         icons[name] = img
         log(f"ไอคอน {name} <- {f}")
+    for f in files:                                   # ไอคอนอาหาร (หลายไฟล์ได้)
+        if os.path.splitext(f)[0].lower().startswith(FOOD_PREFIX):
+            img = cv2.imread(os.path.join(ICON_DIR, f))
+            if img is not None:
+                icons["food:" + f] = img
+                log(f"อาหาร <- {f}")
     if missing:
         sys.exit(f"หาไอคอนไม่เจอ: {missing}\nไฟล์ที่มีใน {ICON_DIR}/: {files}\n"
                  f"แก้ชื่อไฟล์ให้มีคำว่าชื่อไอคอน หรือกำหนดใน ICON_FILES")
@@ -226,7 +245,10 @@ ROI = {
     "rod_red": (0.0, 0.65, 1.0, 1.0),
     "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
 }
+HUNGER_ROI = (0.55, 0.0, 1.0, 0.22)       # หลอดอาหาร (กระเพาะ) มุมขวาบน
+FOOD_ROI = (0.0, 0.70, 0.85, 1.0)        # แถบล่าง
 _scale_cache = {}
+_last_scale = {}
 DS = 0.5                      # ย่อภาพครึ่งหนึ่งก่อนจับคู่ ให้เร็วขึ้น (มือถือ CPU ช้า)
 BUTTON_FRAC_H = 0.19          # ปุ่มคันเบ็ดโดยประมาณ = 19% ของความสูงจอ (ใช้เดาขนาดไอคอนเริ่มต้น)
 
@@ -234,7 +256,7 @@ BUTTON_FRAC_H = 0.19          # ปุ่มคันเบ็ดโดยปร
 def find(frame, icons, name):
     """หาไอคอนแบบหลายขนาด คืน (score, cx, cy)  ขนาดที่เจอครั้งแรกจะถูกจำไว้ ครั้งต่อไปเร็วขึ้น"""
     H, W = frame.shape[:2]
-    x0, y0, x1, y1 = ROI.get(name, (0, 0, 1, 1))
+    x0, y0, x1, y1 = ROI.get(name) or (FOOD_ROI if name.startswith("food:") else HUNGER_ROI if name.startswith("hunger_") else (0, 0, 1, 1))
     ox, oy = int(x0 * W), int(y0 * H)
     roi = frame[oy:int(y1 * H), ox:int(x1 * W)]
     roi = cv2.resize(roi, None, fx=DS, fy=DS, interpolation=cv2.INTER_AREA)
@@ -245,7 +267,7 @@ def find(frame, icons, name):
         sc0 = BUTTON_FRAC_H * H / tpl.shape[1]
         scales = [sc0 * k for k in np.geomspace(0.55, 1.8, 12)]
     else:
-        scales = np.geomspace(0.1, 0.9, 20)
+        scales = np.geomspace(0.15, 1.6, 24)
     best = (-1.0, 0, 0, 1.0)
     for sc in scales:
         t = cv2.resize(tpl, None, fx=sc * DS, fy=sc * DS, interpolation=cv2.INTER_AREA)
@@ -255,6 +277,7 @@ def find(frame, icons, name):
         _, score, _, loc = cv2.minMaxLoc(res)
         if score > best[0]:
             best = (score, ox + (loc[0] + t.shape[1] / 2) / DS, oy + (loc[1] + t.shape[0] / 2) / DS, sc)
+    _last_scale[name] = best[3]
     if name not in _scale_cache and best[0] >= THRESHOLD:
         _scale_cache[name] = best[3]
     return best[0], best[1], best[2]
@@ -327,6 +350,71 @@ def detect_rod(frame):
     if green >= need and green > red:
         return "green", cx, cy
     return "red", cx, cy    # เจอช่องเบ็ดแต่แท่งไม่เขียว = ต้องซ่อม/ใช้ไม่ได้
+
+
+LEVEL_TEXT = {
+    "full": "เต็ม (เขียว)",
+    "yellow": "เริ่มหิว (เหลือง)",
+    "red": "หิวข้าว (แดง) -- เตือน",
+    "danger": "อันตรายถึงชีวิต (กระเพาะสีแดง) !!!",
+}
+
+
+_orange_ref = {}
+
+
+def _orange_frac(bgr):
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    return float(((h_ >= 9) & (h_ <= 24) & (s_ >= 120) & (v_ >= 150)).mean())   # ส้ม (ไม่รวมสีแดงของหัวใจ)
+
+
+def hunger_level(frame, icons):
+    """อ่านระดับหลอดอาหาร 4 ระดับ: "full" เต็ม / "yellow" เริ่มหิว / "red" หิวข้าว / "danger" อันตราย
+    ใช้รูปหาตำแหน่ง แล้วยืนยันด้วยสี (กันเดาผิดจากภาพอื่น) คืน None ถ้าอ่านไม่ได้"""
+    # --- หาไอคอนกระเพาะมีวงแหวน (เต็ม/เหลือง/แดง) ---
+    best = (0.0, None, 0.0, 0.0)
+    for n in HUNGER_NAMES:
+        if n in icons:
+            sc, cx, cy = find(frame, icons, n)
+            if sc > best[0]:
+                best = (sc, n, cx, cy)
+    # --- ระดับอันตราย: ไอคอนกระเพาะสีส้มแดง ต้องเหมือนกว่าไอคอนวงแหวนชัดเจน และสียืนยันได้ ---
+    if "hunger_danger" in icons:
+        sd, dx, dy = find(frame, icons, "hunger_danger")
+        if sd >= 0.85 and sd > best[0] + 0.10:
+            tpl = icons["hunger_danger"]
+            if "d" not in _orange_ref:
+                _orange_ref["d"] = _orange_frac(tpl)
+            k = _last_scale["hunger_danger"]
+            hw, hh = int(tpl.shape[1] * k / 2), int(tpl.shape[0] * k / 2)
+            box = frame[max(0, int(dy) - hh):int(dy) + hh, max(0, int(dx) - hw):int(dx) + hw]
+            if box.size and _orange_frac(box) >= 0.6 * _orange_ref["d"]:
+                return "danger"
+    if best[1] is None or best[0] < 0.55:
+        return None
+    sc, n, cx, cy = best
+    w = icons[n].shape[1] * _last_scale[n]                 # ความกว้างไอคอนบนจอ
+    pad = int(0.7 * w)
+    x0, y0 = max(0, int(cx - pad)), max(0, int(cy - pad))
+    hsv = cv2.cvtColor(frame[y0:int(cy + pad), x0:int(cx + pad)], cv2.COLOR_BGR2HSV)
+    yy, xx = np.ogrid[:hsv.shape[0], :hsv.shape[1]]
+    d = np.hypot(xx - (cx - x0), yy - (cy - y0))
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    # ตัวกระเพาะสีเหลืองตรงกลางต้องมี ไม่งั้นไม่ใช่ไอคอนนี้
+    glyph = (d <= 0.30 * w) & (h_ >= 18) & (h_ <= 34) & (s_ >= 90) & (v_ >= 140)
+    if int(glyph.sum()) < 0.02 * w * w:
+        return None
+    ring = (d >= 0.34 * w) & (d <= 0.54 * w)
+    cnt = {
+        "full": int((ring & (h_ >= 40) & (h_ <= 90) & (s_ >= 100) & (v_ >= 120)).sum()),
+        "yellow": int((ring & (h_ >= 18) & (h_ <= 34) & (s_ >= 120) & (v_ >= 170)).sum()),
+        "red": int((ring & ((h_ <= 8) | (h_ >= 172)) & (s_ >= 110) & (v_ >= 110)).sum()),
+    }
+    top = max(cnt, key=cnt.get)
+    if cnt[top] >= max(20, 0.004 * w * w):
+        return top
+    return None
 
 
 def detect_miss(frame):
@@ -433,6 +521,14 @@ def main():
     green_while_wait = 0
     last_warn = 0.0
     caught = 0
+    foods = [k for k in icons if k.startswith("food:")]
+    hunger_on = any(n in icons for n in HUNGER_NAMES) or "hunger_danger" in icons
+    eating = False
+    eat_tries = 0
+    last_eat = -99.0
+    food_missing_until = 0.0
+    last_level = None
+    last_level_log = 0.0
     btn = None                # (x, y, รัศมี) ของปุ่มคันเบ็ดฝั่งขวา
     ring_hist = []
     bite_tapped = -99.0
@@ -527,6 +623,7 @@ def main():
             no_rod_since = None
             log(f"จบมินิเกม จับปลาแล้ว (รอบที่ {caught}) พลาด {misses} ครั้ง -> รอแถบล่างกลับมาแล้วตกใหม่")
             misses = 0
+            eat_tries = 0
 
         if time.time() - last_action < ACTION_COOLDOWN:
             continue
@@ -596,6 +693,41 @@ def main():
         red_count = 0
 
         # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
+        if rod == "green" and hunger_on:
+            now = time.time()
+            level = hunger_level(frame, icons)
+            if level and (level != last_level or (level in ("red", "danger") and now - last_level_log > 60)):
+                log(f"สถานะกระเพาะ: {LEVEL_TEXT[level]}")
+                last_level, last_level_log = level, now
+            if level in ("red", "danger"):
+                eating = True                  # หิวข้าว/อันตราย -> เริ่มกิน กินจนเต็มค่อยตก
+            elif level == "full":
+                eating = False
+                eat_tries = 0
+            if eating and foods and now >= food_missing_until:
+                if now - last_eat <= EAT_COOLDOWN:
+                    continue                   # รอให้กระเพาะอัปเดต ยังไม่ตก
+                if eat_tries >= MAX_EAT_TRIES:
+                    log(f"กินครบ {MAX_EAT_TRIES} ครั้งแล้วกระเพาะยังไม่เต็ม -> ตกต่อ")
+                    eating = False
+                    eat_tries = 0
+                else:
+                    tapped = False
+                    for name in foods:
+                        fs_, fx, fy = find(frame, icons, name)
+                        if fs_ >= FOOD_THRESHOLD:
+                            eat_tries += 1
+                            log(f"กดอาหาร ({name[5:]}) ครั้งที่ {eat_tries} เพื่อให้กระเพาะเต็มก่อนตก")
+                            dev.tap(fx, fy)
+                            last_eat = last_action = time.time()
+                            tapped = True
+                            break
+                    if tapped:
+                        continue
+                    log("ต้องกินแต่ไม่เจอไอคอนอาหารบนแถบล่าง -> ตกต่อ")
+                    eating = False
+                    food_missing_until = now + FOOD_MISSING_WAIT
+
         if rod == "green":
             # เบ็ดเขียว -> กดปุ่มดาบ -> ปุ่มเปลี่ยนเป็น cast.png และแถบล่างหาย = กำลังตก
             tx = ty = None
