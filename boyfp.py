@@ -512,8 +512,15 @@ def main():
 
         # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
         if rod == "green":
-            log("เบ็ดเขียว -> กดช่องเบ็ดเพื่อตกปลา")
-            dev.tap(rod_info[1], rod_info[2])      # กดช่องเบ็ดบนแถบล่าง แถบจะหายไป = กำลังตก
+            cs, cx, cy = find(frame, icons, "cast")
+            if cs >= THRESHOLD:
+                log("เบ็ดเขียว -> กดตก (cast.png)")
+                tx, ty = cx, cy
+            else:
+                # หาปุ่ม cast.png ไม่เจอ (ปุ่มขวายังเป็นรูปอื่น) -> กดที่ช่องเบ็ดแทน
+                log(f"เบ็ดเขียว -> ไม่เจอ cast.png (คะแนน {cs:.2f}) กดที่ช่องเบ็ดแทน")
+                tx, ty = rod_info[1], rod_info[2]
+            dev.tap(tx, ty)
             last_action = time.time()
             state = "WAIT_BITE"
             cast_time = time.time()
