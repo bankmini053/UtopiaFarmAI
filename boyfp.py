@@ -693,7 +693,7 @@ def main():
         red_count = 0
 
         # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
-        if rod == "green" and hunger_on:
+        if rod == "green" and hunger_on and caught > 0:
             now = time.time()
             level = hunger_level(frame, icons)
             if level and (level != last_level or (level in ("red", "danger") and now - last_level_log > 60)):
