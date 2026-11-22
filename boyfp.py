@@ -525,6 +525,8 @@ def main():
     hunger_on = any(n in icons for n in HUNGER_NAMES) or "hunger_danger" in icons
     eating = False
     eat_tries = 0
+    eat_remaining = 0
+    eat_triggered = False
     last_eat = -99.0
     food_missing_until = 0.0
     last_level = None
@@ -624,6 +626,9 @@ def main():
             log(f"จบมินิเกม จับปลาแล้ว (รอบที่ {caught}) พลาด {misses} ครั้ง -> รอแถบล่างกลับมาแล้วตกใหม่")
             misses = 0
             eat_tries = 0
+            eating = False
+            eat_remaining = 0
+            eat_triggered = False
 
         if time.time() - last_action < ACTION_COOLDOWN:
             continue
