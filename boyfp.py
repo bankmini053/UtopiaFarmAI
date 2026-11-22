@@ -699,11 +699,11 @@ def main():
             if level and (level != last_level or (level in ("red", "danger") and now - last_level_log > 60)):
                 log(f"สถานะกระเพาะ: {LEVEL_TEXT[level]}")
                 last_level, last_level_log = level, now
-            if level in ("yellow", "red", "danger"):
-                  eating = True
+            if level in ("red", "danger"):
+                eating = True                  # หิวข้าว/อันตราย -> เริ่มกิน กินจนเต็มค่อยตก
             elif level == "full":
-                 eating = False
-                 eat_tries = 0
+                eating = False
+                eat_tries = 0
             if eating and foods and now >= food_missing_until:
                 if now - last_eat <= EAT_COOLDOWN:
                     continue                   # รอให้กระเพาะอัปเดต ยังไม่ตก
