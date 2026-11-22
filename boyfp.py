@@ -700,10 +700,10 @@ def main():
                 log(f"สถานะกระเพาะ: {LEVEL_TEXT[level]}")
                 last_level, last_level_log = level, now
             if level in ("yellow", "red", "danger"):
-                eating = True
-                elif level == "full":
-                eating = False
-                eat_tries = 0
+                 eating = True
+             elif level == "full":
+                 eating = False
+                 eat_tries = 0
             if eating and foods and now >= food_missing_until:
                 if now - last_eat <= EAT_COOLDOWN:
                     continue                   # รอให้กระเพาะอัปเดต ยังไม่ตก
