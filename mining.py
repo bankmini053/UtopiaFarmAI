@@ -4,13 +4,14 @@
 mining.py - UtopiaFarmAI : บอทฟามแร่ (Termux + su บนมือถือคลาวด์)
 
 วนลูป:  หาแร่ -> เดินเข้าไป -> ขุด -> มือ -> Pick All -> หาแร่ต่อ
-ขุดครบ HOME_EVERY ก้อน -> เดินกลับบ้าน (6374,14207) -> ขึ้นไป (6381,14224) -> กลับมาฟามต่อ
+ก่อนขุดทุกก้อนเช็กแถบความทนทานของพิก (ช่องแรกของแถบล่าง): เขียว = ขุดต่อ, แดง = ต้องซ่อม -> หยุดบอท
+(ตั้ง HOME_EVERY > 0 ถ้าอยากให้ขุดครบแล้วเดินกลับบ้าน (6374,14207) -> ขึ้นไป (6381,14224) -> กลับมาฟามต่อ)
 
-ต้องมี:  pip install opencv-python-headless numpy pytesseract   (+ pkg install tesseract)
+ต้องมี:  pip install opencv-python-headless numpy   (+ pytesseract/tesseract ถ้าจะใช้เดินตามพิกัด)
+หาแร่ด้วย "สี" (เทาม่วงเข้ม = กลางวัน/เย็น, น้ำเงิน = กลางคืน) จึงไม่ต้องใช้รูปหิน
 ไอคอนในโฟลเดอร์ icons/ (หรือดึงจาก GitHub ให้อัตโนมัติถ้าเน็ตได้):
-    ore_day.png, ore_dusk.png, ore_night.png   รูปหิน (ครอปจากจอจริง เช้า/เย็น/มืด)
-    hand.png                                   ไอคอนมือ (ขึ้นตอนเลือดแร่หมด)
-    pickall.png                                ปุ่ม Pick All
+    hand.png      ไอคอนมือ (ขึ้นตอนเลือดแร่หมด)
+    pickall.png   ปุ่ม Pick All
 รันก่อนใช้งาน: เปิดเกมค้างไว้ ถือพิกแล้ว  ->  python mining.py
 """
 import math
@@ -35,17 +36,17 @@ HOME = (6374, 14207)          # หน้าบ้าน
 STORAGE = (6381, 14224)       # จุดที่เดินขึ้นไปแล้วเสร็จ
 FARM = (6360, 14170)          # จุดฟามแร่
 FARM_RADIUS = 70              # ออกห่างจาก FARM เกินนี้ให้เดินกลับ
-HOME_EVERY = 15               # ขุดกี่ก้อนแล้วกลับบ้าน
+HOME_EVERY = 0                # ขุดกี่ก้อนแล้วกลับบ้าน (0 = ไม่กลับ ขุดอย่างเดียว)
 RETURN_TO_FARM = True         # เสร็จที่บ้านแล้วกลับมาฟามต่อไหม
 COUNTDOWN = 10                # หน่วงเวลาก่อนเริ่ม (วินาที)
 
 ICON_DIR = "icons"
 GITHUB_RAW = "https://raw.githubusercontent.com/bankmini053/UtopiaFarmAI/main/icons/"
-ORE_ICONS = ["ore_day.png", "ore_dusk.png", "ore_night.png"]
 
-MATCH_THR = 0.62              # ความเหมือน template (ต่ำ=จับง่ายแต่พลาดบ่อย)
-SCALE = 0.5                   # ย่อภาพก่อนจับเพื่อให้เร็ว
-TPL_SCALES = [0.7, 0.85, 1.0, 1.2, 1.4]
+TARGET_NAME = "iron_mine.png"  # รูปชื่อแร่ที่ต้องการ (ใน icons/) ถ้าไม่มีไฟล์จะไม่เช็กชื่อ
+TITLE_THR = 0.6
+MIN_BLOB = 500                # ก้อนสีเล็กกว่านี้ (พิกเซลบนภาพย่อ) ไม่นับเป็นแร่
+SCALE = 0.4                   # ย่อภาพก่อนจับเพื่อให้เร็ว
 NEAR_PX = 150                 # แร่ห่างตัวละครไม่เกินนี้ (หน่วยพิกัดอ้างอิง) = ถึงแล้ว
 MINE_TIMEOUT = 45
 POS_TOL = 3                   # คลาดพิกัดได้เท่านี้
@@ -60,6 +61,8 @@ PICKALL_BTN = (1470, 788)
 CAM_SWIPE_Y = 330
 POS_BOX = (280, 425, 600, 482)        # x1,y1,x2,y2 ตัวเลขพิกัด
 BAR_BOX = (1070, 50, 1625, 88)        # แถบเลือดชื่อแร่ด้านบน
+TITLE_BOX = (1000, 0, 1700, 60)       # ชื่อเป้าหมายด้านบน (เช่น "Iron Mine")
+DURA_BOX = (755, 1105, 767, 1170)     # แถบความทนทานของพิก (ช่องแรกแถบล่าง)
 PLAY_ROI = (0.12, 0.17, 0.78, 0.80)   # พื้นที่หาแร่ (ตัด UI ออก)
 
 # ----------------------------- พื้นฐาน ---------------------------------
@@ -134,9 +137,6 @@ def load_tpl(name):
     return None if im is None else to_gray_small(im)
 
 
-ORE_TPLS, HAND_TPL, PICKALL_TPL = [], None, None
-
-
 def find_peaks(gray, tpl, thr, scales, limit=5):
     out = []
     for s in scales:
@@ -172,16 +172,65 @@ def find_ui(img, tpl, thr=0.7):
 
 
 def find_ores(img):
-    g = to_gray_small(img)
+    """จับหินด้วยสี (ใช้ได้ทั้งเช้า/เย็น/มืด ไม่ต้องใช้รูป):
+    กลางวัน/เย็น = ก้อนสีเทาม่วงเข้ม (ไม่ใช่เขียว ไม่ใช่หินสีน้ำตาล)  กลางคืน = ก้อนสีน้ำเงิน
+    คืนรายการ (ระยะจากตัวละคร, x, y) เรียงใกล้ -> ไกล ในพิกัดอ้างอิง"""
+    small = cv2.resize(img, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV).astype(int)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    notgreen = (h < 30) | (h > 95) | (s < 45)
+    day = (v < 135) & (s < 105) & notgreen
+    night = (h >= 98) & (h <= 130) & (s > 90) & (v > 55)
+    m = (day | night).astype(np.uint8) * 255
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    n, _, st, cen = cv2.connectedComponentsWithStats(m)
     x1, y1, x2, y2 = PLAY_ROI
     found = []
-    for tpl in ORE_TPLS:
-        for sc, cx, cy in find_peaks(g, tpl, MATCH_THR, TPL_SCALES):
-            rx, ry = to_ref(cx, cy)
-            if x1 * REF_W < rx < x2 * REF_W and y1 * REF_H < ry < y2 * REF_H:
-                found.append((math.hypot(rx - CHAR[0], ry - CHAR[1]), rx, ry))
+    for i in range(1, n):
+        x, y, w, hh, area = st[i]
+        if area < MIN_BLOB or area > 0.12 * m.shape[0] * m.shape[1]:
+            continue
+        if w / hh > 2.2 or hh / w > 3 or area / (w * hh) < 0.35:
+            continue
+        rx, ry = to_ref(*cen[i])
+        if not (x1 * REF_W < rx < x2 * REF_W and y1 * REF_H < ry < y2 * REF_H):
+            continue
+        if abs(rx - CHAR[0]) < 110 and 480 < ry < 900:      # ตัวละครเอง
+            continue
+        found.append((math.hypot(rx - CHAR[0], ry - CHAR[1]), rx, ry))
     found.sort()
     return found
+
+
+def pick_state(img):
+    """เช็กแถบความทนทานของพิก: 'green' = ขุดต่อ, 'red' = ต้องซ่อม, 'none' = ไม่เห็นแถบ"""
+    x1, y1, x2, y2 = DURA_BOX
+    a, b = px(x1, y1)
+    c, d = px(x2, y2)
+    crop = img[b:d, a:c].astype(int)
+    B, G, R = crop[..., 0], crop[..., 1], crop[..., 2]
+    green = ((G > 190) & (R < 175) & (B < 175)).sum()
+    red = ((R > 170) & (G < R - 60) & (B < R - 60)).sum()
+    if red >= 6 and red > green:
+        return "red"
+    if green >= 6:
+        return "green"
+    return "none"
+
+
+def title_ok(img):
+    """ชื่อเป้าหมายตรงกับที่ต้องการไหม: True/False  (None = ไม่มีรูปชื่อ ข้ามการเช็ก)"""
+    if TITLE_TPL is None:
+        return None
+    x1, y1, x2, y2 = TITLE_BOX
+    g = to_gray_small(img)
+    a, b = int(x1 * W / REF_W * SCALE), int(y1 * H / REF_H * SCALE)
+    c, d = int(x2 * W / REF_W * SCALE), int(y2 * H / REF_H * SCALE)
+    reg = g[b:d, a:c]
+    if reg.shape[0] < TITLE_TPL.shape[0] or reg.shape[1] < TITLE_TPL.shape[1]:
+        return None
+    return float(cv2.matchTemplate(reg, TITLE_TPL, cv2.TM_CCOEFF_NORMED).max()) >= TITLE_THR
 
 
 def bar_state(img):
@@ -310,15 +359,30 @@ def approach():
     return False
 
 
+def wait_gone(timeout=8):
+    """หลังกด Pick All: รอจนแร่หาย (แถบชื่อ/เลือด, ปุ่มมือ และหน้าต่าง Pick All หายหมด) ค่อยหาแร่ใหม่"""
+    t0, clear = time.time(), 0
+    while time.time() - t0 < timeout:
+        img = shot()
+        bar, _ = bar_state(img)
+        busy = bar or find_ui(img, HAND_TPL) or find_ui(img, PICKALL_TPL)
+        clear = 0 if busy else clear + 1
+        if clear >= 2:                 # หายต่อเนื่อง 2 ครั้ง กันภาพกะพริบ
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def mine_current():
-    seen_red, empty, t0, hand_tapped = False, 0, time.time(), 0
+    seen_red, empty, t0, hand_tapped, named = False, 0, time.time(), 0, False
     while time.time() - t0 < MINE_TIMEOUT:
         img = shot()
         bar, hp = bar_state(img)
         pk = find_ui(img, PICKALL_TPL)
         if pk:
             tap(*pk)
-            time.sleep(1.0)
+            time.sleep(0.6)
+            wait_gone()
             return True
         hand = find_ui(img, HAND_TPL)
         if hp:
@@ -331,9 +395,16 @@ def mine_current():
             time.sleep(0.8)
             if PICKALL_TPL is None and hand_tapped >= 1:   # ไม่มีรูป Pick All -> กดตำแหน่งตายตัว
                 tap(*PICKALL_BTN)
-                time.sleep(1.0)
+                time.sleep(0.6)
+                wait_gone()
                 return True
             continue
+        if bar and not named:                              # ตีครั้งแรกแล้วชื่อขึ้น -> เช็กว่าใช่แร่ที่ต้องการ
+            ok = title_ok(img)
+            if ok is False:
+                log("ชื่อเป้าหมายไม่ใช่ที่ต้องการ -> เปลี่ยนเป้าหมาย")
+                return False
+            named = True
         if not bar and not seen_red and time.time() - t0 > 6:
             return False                                   # ไม่ได้ล็อกเป้าแร่
         tap(*ATTACK_BTN)
@@ -364,31 +435,39 @@ def summary():
 
 
 def main():
-    global ORE_TPLS, HAND_TPL, PICKALL_TPL
-    ORE_TPLS = [t for t in (load_tpl(n) for n in ORE_ICONS) if t is not None]
+    global HAND_TPL, PICKALL_TPL, TITLE_TPL
     HAND_TPL, PICKALL_TPL = load_tpl("hand.png"), load_tpl("pickall.png")
-    if not ORE_TPLS:
-        sys.exit("ไม่พบรูปแร่ใน icons/ (ore_day.png / ore_dusk.png / ore_night.png)")
-    if pytesseract is None:
-        sys.exit("ต้องติดตั้ง pytesseract + tesseract เพื่ออ่านพิกัด")
-    print(f"แร่ {len(ORE_TPLS)} แบบ | hand={'มี' if HAND_TPL is not None else 'ไม่มี'} | "
+    TITLE_TPL = load_tpl(TARGET_NAME)
+    if HOME_EVERY and pytesseract is None:
+        sys.exit("HOME_EVERY > 0 ต้องติดตั้ง pytesseract + tesseract เพื่ออ่านพิกัด")
+    print(f"hand={'มี' if HAND_TPL is not None else 'ไม่มี'} | "
           f"pickall={'มี' if PICKALL_TPL is not None else 'ไม่มี'}")
     for i in range(COUNTDOWN, 0, -1):
         print(f"เริ่มใน {i} วิ (สลับไปหน้าเกม)", end="\r", flush=True)
         time.sleep(1)
 
     empty_sweeps = 0
+    warned_none = False
     while True:
-        if stats["since_home"] >= HOME_EVERY:
+        if HOME_EVERY and stats["since_home"] >= HOME_EVERY:
             go_home()
             continue
-        p = read_pos()
-        if p and math.hypot(p[0] - FARM[0], p[1] - FARM[1]) > FARM_RADIUS:
-            log("ออกนอกพื้นที่ฟาม -> กลับจุดฟาม")
-            goto(FARM, tol=6)
-            continue
+        if HOME_EVERY:
+            p = read_pos()
+            if p and math.hypot(p[0] - FARM[0], p[1] - FARM[1]) > FARM_RADIUS:
+                log("ออกนอกพื้นที่ฟาม -> กลับจุดฟาม")
+                goto(FARM, tol=6)
+                continue
 
         img = shot()
+        ps = pick_state(img)
+        if ps == "red":
+            log("พิกแดง = ต้องซ่อม หยุดบอท")
+            summary()
+            sys.exit(0)
+        if ps == "none" and not warned_none:
+            warned_none = True
+            log("ไม่เห็นแถบความทนทานของพิก (ถือพิกอยู่ช่องแรกไหม?)")
         if not find_ores(img):
             empty_sweeps += 1
             sweep_camera()
@@ -407,6 +486,8 @@ def main():
         else:
             stats["fails"] += 1
             log("ขุดไม่สำเร็จ ลองใหม่")
+            joystick(random.uniform(-math.pi, math.pi), 0.6)   # ขยับหนีก้อนเดิม จะได้ไม่เลือกซ้ำ
+            time.sleep(0.8)
             sweep_camera()
 
 
