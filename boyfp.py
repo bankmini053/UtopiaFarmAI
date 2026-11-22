@@ -697,43 +697,62 @@ def main():
             continue
         red_count = 0
 
-        # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
+        # ===== ระบบกินอาหารหลังจับปลา =====
         if rod == "green" and hunger_on and caught > 0:
             now = time.time()
             level = hunger_level(frame, icons)
-            if level and (level != last_level or (level in ("red", "danger") and now - last_level_log > 60)):
+
+            if level and (level != last_level or
+                          (level in ("red", "danger") and now - last_level_log > 60)):
                 log(f"สถานะกระเพาะ: {LEVEL_TEXT[level]}")
                 last_level, last_level_log = level, now
-            if level in ("red", "danger"):
-                eating = True                  # หิวข้าว/อันตราย -> เริ่มกิน กินจนเต็มค่อยตก
-            elif level == "full":
-                eating = False
+
+            # เริ่มกินเมื่อเริ่มหิว (เหลือง) หรือหิว (แดง)
+            if level in ("yellow", "red", "danger") and not eat_triggered:
+                eating = True
+                eat_triggered = True
+                eat_remaining = 10
                 eat_tries = 0
-            if eating and foods and now >= food_missing_until:
-                if now - last_eat <= EAT_COOLDOWN:
-                    continue                   # รอให้กระเพาะอัปเดต ยังไม่ตก
-                if eat_tries >= MAX_EAT_TRIES:
-                    log(f"กินครบ {MAX_EAT_TRIES} ครั้งแล้วกระเพาะยังไม่เต็ม -> ตกต่อ")
+                log("ตรวจพบความหิว -> หยุดตกปลา เตรียมกินอาหาร 10 ครั้ง")
+
+            # ระหว่างกิน ห้ามเริ่มตกปลา
+            if eating:
+                if eat_remaining <= 0:
                     eating = False
-                    eat_tries = 0
-                else:
+                    log("กินอาหารครบ 10 ครั้ง -> กลับไปตกปลา")
+                    continue
+
+                if now - last_eat < EAT_COOLDOWN:
+                    continue
+
+                if foods:
                     tapped = False
+
                     for name in foods:
                         fs_, fx, fy = find(frame, icons, name)
+
                         if fs_ >= FOOD_THRESHOLD:
                             eat_tries += 1
-                            log(f"กดอาหาร ({name[5:]}) ครั้งที่ {eat_tries} เพื่อให้กระเพาะเต็มก่อนตก")
+                            eat_remaining -= 1
+
+                            log(
+                                f"กดอาหารครั้งที่ {eat_tries}/10 "
+                                f"เหลืออีก {eat_remaining} ครั้ง"
+                            )
+
                             dev.tap(fx, fy)
                             last_eat = last_action = time.time()
                             tapped = True
                             break
+
                     if tapped:
                         continue
-                    log("ต้องกินแต่ไม่เจอไอคอนอาหารบนแถบล่าง -> ตกต่อ")
-                    eating = False
-                    food_missing_until = now + FOOD_MISSING_WAIT
 
-        if rod == "green":
+                log("ไม่พบไอคอนอาหาร -> หยุดระบบกินอาหาร")
+                eating = False
+                eat_remaining = 0
+                continue
+
             # เบ็ดเขียว -> กดปุ่มดาบ -> ปุ่มเปลี่ยนเป็น cast.png และแถบล่างหาย = กำลังตก
             tx = ty = None
             for name, label in (("sword", "ปุ่มดาบ"), ("cast", "cast.png")):
