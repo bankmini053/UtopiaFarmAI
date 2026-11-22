@@ -28,6 +28,7 @@ import struct
 import time
 import subprocess
 import urllib.request
+from collections import deque
 
 import cv2
 import numpy as np
@@ -45,7 +46,7 @@ FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกคร�
 ICON_FILES = {}
 REQUIRED = ["cast", "reel"]
 HUNGER_NAMES = ("hunger_full", "hunger_yellow", "hunger_red")     # ไอคอนกระเพาะ 3 ระดับที่มีวงแหวน
-OPTIONAL = ["sword", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
+OPTIONAL = ["sword", "fix", "equip_no", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
     "rod_green": ["rod_green"],
@@ -55,6 +56,8 @@ ALIASES = {
     "reel": ["reel", "bite", "glow", "hook"],
     "bait": ["bait", "เหยื่อ"],
     "sword": ["sword", "ดาบ", "dagger", "attack"],
+    "fix": ["fix"],
+    "equip_no": ["equip_no", "equip"],
     "hunger_full": ["hunger_full"],
     "hunger_yellow": ["hunger_yellow"],
     "hunger_red": ["hunger_red"],
@@ -81,6 +84,9 @@ HIT_BUTTON = None             # พิกัดปุ่มกด เช่น (
 HIT_BUTTON_FRAC = (0.80, 0.75)  # สำรอง: ตำแหน่งปุ่มเป็นสัดส่วนจอ (ปุ่มคันเบ็ดขวา)
 
 # ---- ขั้นตอนอื่น ----
+REPAIR_DELAY = 1.2            # หน่วงระหว่างขั้นตอนซ่อมเบ็ด (กดเบ็ด -> Fix -> Equip No) วินาที
+REPAIR_WAIT = 6.0             # รอให้หน้าต่าง/ปุ่มขึ้นสูงสุดกี่วินาที
+MAX_REPAIR_FAIL = 3           # ซ่อมไม่สำเร็จติดกันกี่ครั้งให้หยุดบอท
 EAT_COOLDOWN = 2.5            # กดอาหารซ้ำห่างกันอย่างน้อยกี่วินาที
 MAX_EAT_TRIES = 20            # กดอาหารสูงสุดกี่ครั้งต่อรอบ (กินจนกระเพาะเต็ม) เกินนี้ก็ตกต่อ กันค้าง
 FOOD_THRESHOLD = 0.65         # ความเหมือนของไอคอนอาหาร (ช่องอาหารมีพื้นหลัง/ตัวเลขต่างกันได้)
@@ -89,12 +95,87 @@ ACTION_COOLDOWN = 1.5         # พักหลังกดปุ่มตก/�
 BITE_TIMEOUT = 90             # ตกแล้วรอปลากินนานสุดกี่วินาที เกินนี้กลับไปเช็กเบ็ดใหม่
 NO_ROD_ASSUME_FISHING = 8     # ไม่เจอไอคอนเบ็ดนานเท่านี้ ถือว่ากำลังตกอยู่แล้ว (แถบล่างถูกซ่อน)
 DEBUG = True
+DASHBOARD = True              # แสดงหน้าสถานะสวยๆ (ปิด = พิมพ์เป็นบรรทัดแบบเดิม)
 # ==========================================
 
 
+def _fmt_time(sec):
+    sec = int(sec)
+    return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+class Status:
+    """หน้าสถานะ: กำลังทำอะไร / ตกกี่รอบ / ได้ปลากี่ตัว / พลาดกี่ครั้ง + เหตุการณ์ล่าสุด"""
+    W = 34
+
+    def __init__(self):
+        self.t0 = time.time()
+        self.activity = "เริ่มต้น"
+        self.casts = self.fish = self.misses = self.eats = self.repairs = 0
+        self.hunger = "-"
+        self.events = deque(maxlen=6)
+        self.last_draw = 0.0
+        self.live = DASHBOARD and sys.stdout.isatty()
+
+    def event(self, text):
+        ts = time.strftime("%H:%M:%S")
+        self.events.append(f"{ts} {text}")
+        if self.live:
+            self.draw()
+        elif DEBUG:
+            print(f"{ts} {text}", flush=True)
+
+    def set(self, activity):
+        if activity != self.activity:
+            self.activity = activity
+            if self.live:
+                self.draw()
+
+    def tick(self):
+        if self.live and time.time() - self.last_draw >= 1.0:
+            self.draw(force=True)
+
+    def lines(self, final=False):
+        el = time.time() - self.t0
+        rate = f"{el / self.fish:.0f} วิ/ตัว" if self.fish else "-"
+        bar = "━" * self.W
+        out = [bar, ("  🎣 สรุปผลการตกปลา" if final else "  🎣 บอทตกปลา  (Ctrl+C เพื่อหยุด)"), bar]
+        if not final:
+            out.append(f" สถานะ    : {self.activity}")
+        out += [
+            f" เวลาทำงาน : {_fmt_time(el)}",
+            "─" * self.W,
+            f" 🔄 ตกรวม   : {self.casts} รอบ",
+            f" 🐟 ได้ปลา  : {self.fish} ตัว  ({rate})",
+            f" ❌ พลาดรวม : {self.misses} ครั้ง",
+            f" 🍖 กินอาหาร: {self.eats} ครั้ง",
+            f" 🔧 ซ่อมเบ็ด: {self.repairs} ครั้ง",
+            f" 🥣 กระเพาะ : {self.hunger}",
+        ]
+        if not final:
+            out.append("─" * self.W)
+            out.append(" เหตุการณ์ล่าสุด")
+            out += [" " + e[:44] for e in self.events]
+        out.append(bar)
+        return out
+
+    def draw(self, force=False):
+        now = time.time()
+        if not force and now - self.last_draw < 0.25:
+            return
+        self.last_draw = now
+        sys.stdout.write("\033[H\033[2J" + "\n".join(self.lines()) + "\n")
+        sys.stdout.flush()
+
+    def summary(self):
+        return "\n".join(self.lines(final=True))
+
+
+STATUS = Status()
+
+
 def log(*a):
-    if DEBUG:
-        print(time.strftime("%H:%M:%S"), *a, flush=True)
+    STATUS.event(" ".join(str(x) for x in a))
 
 
 # ---------- ไอคอน (ในเครื่อง + GitHub) ----------
@@ -244,6 +325,8 @@ ROI = {
     "rod_green": (0.0, 0.65, 1.0, 1.0),  # แถบล่าง
     "rod_red": (0.0, 0.65, 1.0, 1.0),
     "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
+    "fix": (0.25, 0.45, 0.75, 1.0),     # ปุ่ม Fix ในหน้าต่างซ่อมของ
+    "equip_no": (0.25, 0.45, 0.75, 1.0),
 }
 HUNGER_ROI = (0.55, 0.0, 1.0, 0.22)       # หลอดอาหาร (กระเพาะ) มุมขวาบน
 FOOD_ROI = (0.0, 0.70, 0.85, 1.0)        # แถบล่าง
@@ -318,6 +401,31 @@ def detect_minigame(frame):
     return pin_x, x0 + best_run[0], x0 + best_run[1]
 
 
+def rod_from_bar(frame):
+    """ไม่มีกรอบเหลือง: หาแท่งความทนทานแนวตั้งสีแดง/เขียวสว่างข้างช่องเบ็ด (ช่องซ้ายสุดของแถบล่าง)
+    คืน ("green"|"red", x, y กึ่งกลางช่องเบ็ด) หรือ None"""
+    H, W = frame.shape[:2]
+    x0, y0 = 0, int(0.80 * H)
+    hsv = cv2.cvtColor(frame[y0:, x0:int(0.6 * W)], cv2.COLOR_BGR2HSV)
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    masks = {
+        "red": (((h_ <= 8) | (h_ >= 172)) & (s_ >= 130) & (v_ >= 140)),
+        "green": ((h_ >= 45) & (h_ <= 85) & (s_ >= 90) & (v_ >= 190)),
+    }
+    found = []
+    for color, m in masks.items():
+        n, _, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8) * 255)
+        for x, y, w, h, a in st[1:]:
+            if (0.0025 * W <= w <= 0.012 * W and 0.04 * H <= h <= 0.09 * H
+                    and h >= 2.5 * w and a >= 0.6 * w * h):
+                found.append((x, y, w, h, color))
+    if not found:
+        return None
+    x, y, w, h, color = min(found, key=lambda f: f[0])      # ซ้ายสุด = ช่องเบ็ด
+    bx, by = x0 + x + w / 2, y0 + y + h / 2
+    return color, bx - 0.0162 * W, by - 0.0172 * H           # เลื่อนจากแท่งไปกลางช่อง
+
+
 def detect_rod(frame):
     """เช็กเบ็ดจากสี: หากรอบเหลือง 4 มุมของช่องเบ็ดที่เลือกอยู่บนแถบล่างซ้าย
     แล้วดูแท่งความทนทานข้างในช่อง  คืน ("green"|"red", กึ่งกลางช่อง x, y) หรือ None (ไม่เจอแถบล่าง)"""
@@ -330,13 +438,13 @@ def detect_rod(frame):
     corners = [(x, y, w, h) for x, y, w, h, a in st[1:]
                if 0.006 * W <= w <= 0.02 * W and 0.006 * W <= h <= 0.02 * W]
     if len(corners) < 3:
-        return None
+        return rod_from_bar(frame)          # ไม่มีกรอบเหลือง (เบ็ดไม่ได้ถูกเลือก/เบ็ดพัง) ดูจากแท่งความทนทาน
     # เอาเฉพาะกลุ่มที่ขนาดใกล้เคียงกัน (มุมของกรอบเดียวกัน)
     corners.sort(key=lambda c: c[2])
     ref = corners[len(corners) // 2]
     corners = [c for c in corners if abs(c[2] - ref[2]) <= 0.3 * ref[2] and abs(c[3] - ref[3]) <= 0.3 * ref[3]]
     if len(corners) < 3:
-        return None
+        return rod_from_bar(frame)
     bx0 = min(c[0] for c in corners)
     by0 = min(c[1] for c in corners)
     bx1 = max(c[0] + c[2] for c in corners)
@@ -471,6 +579,45 @@ class Timing:
         return True
 
 
+def wait_icon(dev, icons, name, timeout, thr=THRESHOLD):
+    """รอจนไอคอนขึ้นบนจอ คืน (x, y) หรือ None ถ้าหมดเวลา"""
+    end = time.time() + timeout
+    while time.time() < end:
+        fr = dev.screen()
+        if fr is not None:
+            sc, x, y = find(fr, icons, name)
+            if sc >= thr:
+                return x, y
+        time.sleep(0.15)
+    return None
+
+
+def repair_rod(dev, icons, slot_x, slot_y):
+    """ซ่อมเบ็ด: กดเบ็ดแดง 1 ครั้ง -> ขึ้น Fix กด -> ขึ้น Equip No กดอีก (มีหน่วงระหว่างขั้น) คืน True/False"""
+    STATUS.set("ซ่อมเบ็ด: กดเบ็ดสีแดง")
+    log("เบ็ดแดง -> กดเบ็ดเพื่อซ่อม")
+    dev.tap(slot_x, slot_y)
+    time.sleep(REPAIR_DELAY)
+    pos = wait_icon(dev, icons, "fix", REPAIR_WAIT)
+    if pos is None:
+        log("ไม่เจอปุ่ม Fix")
+        return False
+    STATUS.set("ซ่อมเบ็ด: กด Fix")
+    log("กด Fix")
+    dev.tap(*pos)
+    time.sleep(REPAIR_DELAY)
+    pos = wait_icon(dev, icons, "equip_no", REPAIR_WAIT) if "equip_no" in icons else None
+    if pos is None:
+        log("ไม่เจอปุ่ม Equip No")
+        return False
+    STATUS.set("ซ่อมเบ็ด: กด Equip No")
+    log("กด Equip No")
+    dev.tap(*pos)
+    time.sleep(REPAIR_DELAY)
+    log("ซ่อมเบ็ดเสร็จ")
+    return True
+
+
 def hit_point(frame, icons):
     if HIT_BUTTON:
         return HIT_BUTTON
@@ -488,7 +635,8 @@ def main():
 
     wait = int(sys.argv[1]) if len(sys.argv) > 1 else COUNTDOWN   # python boyfp.py 30 = นับ 30 วินาที
     for i in range(wait, 0, -1):
-        print(f"เริ่มใน {i} วิ (สลับไปหน้าเกม)...", flush=True)
+        STATUS.set(f"เริ่มใน {i} วิ (สลับไปหน้าเกม)")
+        STATUS.draw(force=True)
         time.sleep(1)
 
     # ไม่เริ่มจนกว่าจะเห็นหน้าเกมจริง (ปุ่มคันเบ็ด/แถบเบ็ด) กันกดผิดหน้าจอ
@@ -498,11 +646,12 @@ def main():
         if frame is not None and (detect_rod(frame) is not None or any(
                 find(frame, icons, n)[0] >= THRESHOLD for n in ("cast", "reel"))):
             break
-        if time.time() - shown > 5:
-            shown = time.time()
-            print("รอเข้าหน้าเกม (ยังไม่เห็นปุ่มคันเบ็ด)...", flush=True)
+        STATUS.set("รอเข้าหน้าเกม (ยังไม่เห็นปุ่มคันเบ็ด)")
+        STATUS.tick()
         time.sleep(0.5)
-    log("เจอหน้าเกม เริ่มทำงาน (Ctrl+C เพื่อหยุด)")
+    log("เจอหน้าเกม เริ่มทำงาน")
+    STATUS.set("ตรวจเบ็ด")
+    repair_fail = 0
 
     timing = Timing(TAP_DELAY, USER_OFFSET, INNER_MARGIN, HIT_COOLDOWN)
     state = "IDLE"            # IDLE = รอแถบล่าง/เช็กเบ็ด/ตก   WAIT_BITE = ตกแล้ว รอปลากิน
@@ -541,6 +690,7 @@ def main():
             time.sleep(0.05)      # แคปไม่สมบูรณ์ ลองเฟรมถัดไปทันที
             continue
         t = time.time()
+        STATUS.tick()
 
         # ===== ทางด่วนรอปลากิน: ดูแค่วงแสงรอบปุ่ม (เร็วกว่าเทียบรูป) =====
         if state == "WAIT_BITE" and not in_game and time.time() - bite_tapped > 6.0:
@@ -554,6 +704,7 @@ def main():
                 ring_hist = (ring_hist + [p])[-20:]
                 base = min(ring_hist)
                 if p >= max(BITE_RING_MIN, base * BITE_RING_RATIO) and len(ring_hist) >= 3:
+                    STATUS.set("ปลากิน! กดทันที")
                     log(f"ปลากิน (วงแสง {p:.0f} / ปกติ {base:.0f}) -> กดทันที")
                     dev.tap(btn[0], btn[1])
                     bite_tapped = last_action = time.time()
@@ -585,6 +736,7 @@ def main():
                 log("เข้ามินิเกม")
                 in_game = True
                 misses = 0
+            STATUS.set(f"มินิเกม: กดตามจังหวะ (พลาด {misses}/{MAX_MISS})")
             last_seen_game = t
             state = "IDLE"
 
@@ -592,9 +744,13 @@ def main():
             if detect_miss(frame) and t - last_miss > MISS_COOLDOWN:
                 last_miss = t
                 misses += 1
+                STATUS.misses += 1
+                STATUS.set(f"มินิเกม: กดตามจังหวะ (พลาด {misses}/{MAX_MISS})")
                 log(f"กดพลาด (แถบแดง) ครั้งที่ {misses}/{MAX_MISS}")
                 if misses >= MAX_MISS:
-                    print(f"\nจับปลาไม่ได้ (กดพลาด {misses} ครั้ง) หยุดบอท", flush=True)
+                    STATUS.set("หยุด: จับปลาไม่ได้")
+                    log(f"จับปลาไม่ได้ (กดพลาด {misses} ครั้ง) หยุดบอท")
+                    STATUS.stop_reason = f"จับปลาไม่ได้ (กดพลาด {misses} ครั้ง)"
                     sys.exit(1)
 
             # เหยื่อ -1 = ติดปลาแล้ว (เช็กทุก 1 วินาที ไม่ให้หน่วงจังหวะกด)
@@ -618,6 +774,8 @@ def main():
             in_game = False
             timing.reset()
             caught += 1
+            STATUS.fish += 1
+            STATUS.set("จับปลาได้ -> รอแถบล่างกลับมา")
             last_action = time.time()
             rod_seen = True       # หลังจับปลา แถบล่างจะกลับมา ห้ามเดาว่ากำลังตกอยู่
             no_rod_since = None
@@ -633,6 +791,7 @@ def main():
         if rs >= REEL_MIN:
             cs0, _, _ = find(frame, icons, "cast")
             if rs - cs0 >= REEL_MARGIN:          # ปุ่มเรืองแสงต้องเหมือน reel มากกว่า cast ชัดเจน
+                STATUS.set("ปลากิน! กดทันที")
                 log("ปลากิน (ปุ่มเรืองแสง) -> กด")
                 dev.tap(rx, ry)
                 last_action = time.time()
@@ -677,18 +836,22 @@ def main():
             red_count += 1
             if red_count < 3:
                 continue          # อ่านซ้ำให้แน่ใจก่อน
-            if "repair" in icons:
-                ps, px, py = find(frame, icons, "repair")
-                if ps >= THRESHOLD:
-                    log("เบ็ดไม่เขียว -> ซ่อม")
-                    dev.tap(px, py)
-                    last_action = time.time()
-                    red_count = 0
-                else:
-                    log("เบ็ดไม่เขียว แต่ไม่เจอปุ่มซ่อม")
-            else:
-                print("\nเบ็ดไม่เขียว (ต้องซ่อม) และยังไม่มีไอคอนปุ่มซ่อม (repair.png) หยุดบอท", flush=True)
+            red_count = 0
+            if "fix" not in icons:
+                STATUS.stop_reason = "เบ็ดแดง แต่ยังไม่มีไอคอน fix.png"
+                log("เบ็ดแดง แต่ยังไม่มีไอคอน fix.png (และ equip_no.png) หยุดบอท")
                 sys.exit(1)
+            if repair_rod(dev, icons, rod_info[1], rod_info[2]):
+                STATUS.repairs += 1
+                repair_fail = 0
+            else:
+                repair_fail += 1
+                if repair_fail >= MAX_REPAIR_FAIL:
+                    STATUS.stop_reason = f"ซ่อมเบ็ดไม่สำเร็จติดกัน {repair_fail} ครั้ง"
+                    log(f"ซ่อมเบ็ดไม่สำเร็จติดกัน {repair_fail} ครั้ง หยุดบอท")
+                    sys.exit(1)
+            STATUS.set("ตรวจเบ็ด")
+            last_action = time.time()
             continue
         red_count = 0
 
@@ -696,6 +859,8 @@ def main():
         if rod == "green" and hunger_on:
             now = time.time()
             level = hunger_level(frame, icons)
+            if level:
+                STATUS.hunger = LEVEL_TEXT[level]
             if level and (level != last_level or (level in ("red", "danger") and now - last_level_log > 60)):
                 log(f"สถานะกระเพาะ: {LEVEL_TEXT[level]}")
                 last_level, last_level_log = level, now
@@ -719,6 +884,8 @@ def main():
                         fs_, fx, fy = find(frame, icons, name)
                         if fs_ >= FOOD_THRESHOLD:
                             eat_tries += 1
+                            STATUS.eats += 1
+                            STATUS.set(f"กินอาหารจนเต็ม (ครั้งที่ {eat_tries})")
                             log(f"กดอาหาร ({name[5:]}) ครั้งที่ {eat_tries} เพื่อให้กระเพาะเต็มก่อนตก")
                             dev.tap(fx, fy)
                             last_eat = last_action = time.time()
@@ -744,6 +911,8 @@ def main():
                 log("เบ็ดเขียว แต่ไม่เจอปุ่มดาบ/cast.png -> กดที่ช่องเบ็ดแทน")
                 tx, ty = rod_info[1], rod_info[2]
             dev.tap(tx, ty)
+            STATUS.casts += 1
+            STATUS.set("รอปลากิน")
             last_action = time.time()
             state = "WAIT_BITE"
             cast_time = time.time()
@@ -758,13 +927,20 @@ def main():
             state = "WAIT_BITE"
             cast_time = time.time()
             no_rod_since = None
-        elif rod_seen and time.time() - last_warn > 15:
-            last_warn = time.time()
-            log("รอแถบล่างกลับมา...")
+            STATUS.set("รอปลากิน")
+        elif rod_seen:
+            STATUS.set("รอแถบล่างกลับมา")
 
 
 if __name__ == "__main__":
+    reason = "หยุดโดยผู้ใช้ (Ctrl+C)"
     try:
         main()
     except KeyboardInterrupt:
-        print("\nหยุดบอท")
+        pass
+    except SystemExit:
+        reason = getattr(STATUS, "stop_reason", "หยุดการทำงาน")
+    finally:
+        print("\n" + STATUS.summary())
+        print(f" หยุดเพราะ : {reason}")
+        print("━" * Status.W)
