@@ -26,6 +26,8 @@ import sys
 import json
 import struct
 import time
+import shutil
+import tempfile
 import subprocess
 import urllib.request
 from collections import deque
@@ -46,7 +48,7 @@ FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกคร�
 ICON_FILES = {}
 REQUIRED = ["cast", "reel"]
 HUNGER_NAMES = ("hunger_full", "hunger_yellow", "hunger_red")     # ไอคอนกระเพาะ 3 ระดับที่มีวงแหวน
-OPTIONAL = ["sword", "fix", "equip_no", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
+OPTIONAL = ["sword", "fix", "equip_no", "bait_slot", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
     "rod_green": ["rod_green"],
@@ -54,7 +56,8 @@ ALIASES = {
     "repair": ["repair", "fix", "ซ่อม"],
     "cast": ["cast", "fishing_btn", "rod_btn", "idle"],
     "reel": ["reel", "bite", "glow", "hook"],
-    "bait": ["bait", "เหยื่อ"],
+    "bait": [],
+    "bait_slot": [],
     "sword": ["sword", "ดาบ", "dagger", "attack"],
     "fix": ["fix"],
     "equip_no": ["equip_no", "equip"],
@@ -94,6 +97,11 @@ FOOD_MISSING_WAIT = 60        # ไม่เจออาหารแล้ว �
 ACTION_COOLDOWN = 1.5         # พักหลังกดปุ่มตก/ซ่อม/reel
 BITE_TIMEOUT = 90             # ตกแล้วรอปลากินนานสุดกี่วินาที เกินนี้กลับไปเช็กเบ็ดใหม่
 NO_ROD_ASSUME_FISHING = 8     # ไม่เจอไอคอนเบ็ดนานเท่านี้ ถือว่ากำลังตกอยู่แล้ว (แถบล่างถูกซ่อน)
+READ_COUNTS = True            # อ่านจำนวนเหยื่อ/อาหาร/ไม้ที่เหลือ (ต้องติดตั้ง tesseract: pkg install tesseract)
+COUNT_INTERVAL = 8.0          # อ่านจำนวนบนแถบล่างทุกกี่วินาที (ไม่ให้หน่วงการตก)
+SLOT_R_FRAC = 0.049           # รัศมีช่องบนแถบล่างประมาณ 4.9% ของความสูงจอ
+BAIT_LOW = 20                 # เหยื่อเหลือน้อยกว่านี้ขึ้น ⚠
+FOOD_LOW = 3                  # อาหารเหลือน้อยกว่านี้ขึ้น ⚠
 DEBUG = True
 DASHBOARD = True              # แสดงหน้าสถานะสวยๆ (ปิด = พิมพ์เป็นบรรทัดแบบเดิม)
 # ==========================================
@@ -113,7 +121,8 @@ class Status:
         self.activity = "เริ่มต้น"
         self.casts = self.fish = self.misses = self.eats = self.repairs = 0
         self.hunger = "-"
-        self.events = deque(maxlen=6)
+        self.bait = self.food = self.wood = self.wood_need = None
+        self.events = deque(maxlen=4)
         self.last_draw = 0.0
         self.live = DASHBOARD and sys.stdout.isatty()
 
@@ -135,6 +144,19 @@ class Status:
         if self.live and time.time() - self.last_draw >= 1.0:
             self.draw(force=True)
 
+    @staticmethod
+    def _stock(n, low):
+        if n is None:
+            return "-"
+        return f"{n} อัน" + ("  ⚠ เหลือน้อย" if n < low else "")
+
+    def _wood(self):
+        if self.wood is None:
+            return "- (อ่านตอนซ่อมเบ็ด)"
+        if self.wood_need:
+            return f"{self.wood} (ซ่อมได้อีก {self.wood // self.wood_need} ครั้ง)"
+        return f"{self.wood}"
+
     def lines(self, final=False):
         el = time.time() - self.t0
         rate = f"{el / self.fish:.0f} วิ/ตัว" if self.fish else "-"
@@ -151,6 +173,10 @@ class Status:
             f" 🍖 กินอาหาร: {self.eats} ครั้ง",
             f" 🔧 ซ่อมเบ็ด: {self.repairs} ครั้ง",
             f" 🥣 กระเพาะ : {self.hunger}",
+            "─" * self.W,
+            f" 🪱 เหยื่อ   : {self._stock(self.bait, BAIT_LOW)}",
+            f" 🍖 อาหาร   : {self._stock(self.food, FOOD_LOW)}",
+            f" 🪵 ไม้ซ่อม  : {self._wood()}",
         ]
         if not final:
             out.append("─" * self.W)
@@ -325,6 +351,7 @@ ROI = {
     "rod_green": (0.0, 0.65, 1.0, 1.0),  # แถบล่าง
     "rod_red": (0.0, 0.65, 1.0, 1.0),
     "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
+    "bait_slot": (0.0, 0.70, 0.85, 1.0),  # ช่องเหยื่อบนแถบล่าง
     "fix": (0.25, 0.45, 0.75, 1.0),     # ปุ่ม Fix ในหน้าต่างซ่อมของ
     "equip_no": (0.25, 0.45, 0.75, 1.0),
 }
@@ -541,6 +568,137 @@ def detect_miss(frame):
     return best >= 0.02 * W
 
 
+TESS = shutil.which("tesseract")
+_ocr_warned = False
+
+
+def ocr_digits(bgr, whitelist="0123456789"):
+    """อ่านตัวเลขจากภาพเล็กๆ ด้วย tesseract (ติดตั้ง: pkg install tesseract) ไม่มี/อ่านไม่ได้ คืน ''"""
+    global _ocr_warned
+    if not TESS:
+        if not _ocr_warned:
+            _ocr_warned = True
+            log("ยังไม่มี tesseract อ่านจำนวนที่เหลือไม่ได้ (pkg install tesseract)")
+        return ""
+    for mode in (0, 1):
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        v = cv2.resize(hsv[..., 2], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        if mode == 0:
+            t, _ = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            m = v > max(t, 140)
+        else:
+            sat = cv2.resize(hsv[..., 1], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+            m = (v > 190) & (sat < 90)
+        img = cv2.copyMakeBorder(255 - m.astype(np.uint8) * 255, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255)
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            cv2.imwrite(path, img)
+            out = subprocess.run([TESS, path, "stdout", "--psm", "7", "-c", f"tessedit_char_whitelist={whitelist}"],
+                                 capture_output=True, text=True, timeout=15).stdout
+        except Exception:
+            out = ""
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        txt = "".join(ch for ch in out if ch in whitelist)
+        if txt:
+            return txt
+    return ""
+
+
+def read_count_near(frame, mx, my, r):
+    """อ่านตัวเลขจำนวนบนป้ายมุมขวาบนของช่องที่เจอที่ (mx, my) รัศมีช่อง r คืน int หรือ None
+    หากลุ่มตัวเลขสีขาวตัวสูงราว 0.4r ใกล้ตำแหน่งที่ควรเป็น (ไม่พึ่งสีป้าย พื้นหลังมืดก็อ่านได้)"""
+    H, W = frame.shape[:2]
+    x0, x1 = max(0, int(mx - 0.2 * r)), min(W, int(mx + 1.7 * r))
+    y0, y1 = max(0, int(my - 1.5 * r)), min(H, int(my - 0.15 * r))
+    roi = frame[y0:y1, x0:x1]
+    if roi.size == 0:
+        return None
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    white = ((hsv[..., 2] > 185) & (hsv[..., 1] < 90)).astype(np.uint8) * 255
+    n, _, st, _ = cv2.connectedComponentsWithStats(white)
+    comps = [(x, y, w, h) for x, y, w, h, a in st[1:]
+             if 0.25 * r <= h <= 0.65 * r and 0.05 * r <= w <= 0.55 * r and a >= 12]
+    if not comps:
+        return None
+    ex, ey = mx - x0 + 0.6 * r, my - y0 - 0.72 * r           # ตำแหน่งที่คาดว่าเป็นตัวเลข
+    best, best_score = None, -1e9
+    for c in comps:
+        cy = c[1] + c[3] / 2
+        line = [d for d in comps if abs((d[1] + d[3] / 2) - cy) <= 0.15 * r]
+        line.sort(key=lambda d: d[0])
+        grp = [c]                                            # ต่อตัวเลขที่อยู่ติดกันบนบรรทัดเดียวกัน
+        changed = True
+        while changed:
+            changed = False
+            for d in line:
+                if d in grp:
+                    continue
+                if any(abs(d[0] - (g[0] + g[2])) <= 0.45 * r or abs(g[0] - (d[0] + d[2])) <= 0.45 * r for g in grp):
+                    grp.append(d)
+                    changed = True
+        gx0, gx1 = min(g[0] for g in grp), max(g[0] + g[2] for g in grp)
+        gy0, gy1 = min(g[1] for g in grp), max(g[1] + g[3] for g in grp)
+        dist = abs((gx0 + gx1) / 2 - ex) + abs((gy0 + gy1) / 2 - ey)
+        score = len(grp) * 0.25 * r - dist
+        if score > best_score and dist <= 1.0 * r:
+            best, best_score = (gx0, gy0, gx1, gy1), score
+    if best is None:
+        return None
+    gx0, gy0, gx1, gy1 = best
+    pad = max(3, int(0.12 * r))
+    crop = roi[max(0, gy0 - pad):gy1 + pad, max(0, gx0 - pad):gx1 + pad]
+    txt = ocr_digits(crop)
+    return int(txt) if txt.isdigit() else None
+
+
+def read_wood(frame):
+    """หน้าต่างซ่อมของ: อ่าน 'มี/ใช้' ใต้ไอคอนไม้ เช่น 1423/7  คืน (มี, ใช้) หรือ None"""
+    H, W = frame.shape[:2]
+    roi = frame[int(0.595 * H):int(0.675 * H), int(0.42 * W):int(0.58 * W)]
+    txt = ocr_digits(roi, "0123456789/")
+    a, _, b = txt.partition("/")
+    if a.isdigit() and b.isdigit() and len(b) <= 3:
+        return int(a), int(b)
+    return None
+
+
+def update_counts(frame, icons, foods, miss):
+    """อ่านจำนวนเหยื่อ/อาหารบนแถบล่าง เก็บใน STATUS  miss = ตัวนับพลาดต่อเนื่อง (dict)"""
+    r = SLOT_R_FRAC * frame.shape[0]
+    if "bait_slot" in icons:
+        sc, mx, my = find(frame, icons, "bait_slot")
+        if sc >= 0.70:
+            n = read_count_near(frame, mx, my, r)
+            if n is not None:
+                STATUS.bait = n
+                miss["bait"] = 0
+        else:
+            miss["bait"] = miss.get("bait", 0) + 1
+            if miss["bait"] >= 2 and STATUS.bait:
+                STATUS.bait = 0                        # ช่องเหยื่อหายไปจากแถบ = หมด
+    if foods:
+        total, found = 0, False
+        for name in foods:
+            sc, mx, my = find(frame, icons, name)
+            if sc >= FOOD_THRESHOLD:
+                n = read_count_near(frame, mx, my, r)
+                if n is not None:
+                    total += n
+                    found = True
+        if found:
+            STATUS.food = total
+            miss["food"] = 0
+        else:
+            miss["food"] = miss.get("food", 0) + 1
+            if miss["food"] >= 2 and STATUS.food:
+                STATUS.food = 0
+
+
 class Timing:
     """ตัดสินใจจังหวะกด จากตำแหน่งปลาที่อ่านได้เป็นช่วงๆ"""
     def __init__(self, tap_delay=0.08, user_offset=0.0, inner=0.10, cooldown=1.0):
@@ -580,41 +738,60 @@ class Timing:
 
 
 def wait_icon(dev, icons, name, timeout, thr=THRESHOLD):
-    """รอจนไอคอนขึ้นบนจอ คืน (x, y) หรือ None ถ้าหมดเวลา"""
+    """รอจนไอคอนขึ้นบนจอ คืน (x, y, เฟรมที่เจอ) หรือ None ถ้าหมดเวลา"""
     end = time.time() + timeout
     while time.time() < end:
         fr = dev.screen()
         if fr is not None:
             sc, x, y = find(fr, icons, name)
             if sc >= thr:
-                return x, y
+                return x, y, fr
         time.sleep(0.15)
     return None
 
 
 def repair_rod(dev, icons, slot_x, slot_y):
-    """ซ่อมเบ็ด: กดเบ็ดแดง 1 ครั้ง -> ขึ้น Fix กด -> ขึ้น Equip No กดอีก (มีหน่วงระหว่างขั้น) คืน True/False"""
+    """ซ่อมเบ็ด: กดเบ็ดแดง 1 ครั้ง -> ขึ้น Fix กด -> ขึ้น Equip No กดอีก (มีหน่วงระหว่างขั้น)
+    คืน True (สำเร็จ) / False (ไม่สำเร็จ) / "nowood" (ไม้ไม่พอ)  พร้อมอัปเดตจำนวนไม้ที่เหลือใน STATUS"""
     STATUS.set("ซ่อมเบ็ด: กดเบ็ดสีแดง")
     log("เบ็ดแดง -> กดเบ็ดเพื่อซ่อม")
     dev.tap(slot_x, slot_y)
     time.sleep(REPAIR_DELAY)
-    pos = wait_icon(dev, icons, "fix", REPAIR_WAIT)
-    if pos is None:
+    got = wait_icon(dev, icons, "fix", REPAIR_WAIT)
+    if got is None:
         log("ไม่เจอปุ่ม Fix")
         return False
+    fx, fy, fr = got
+    have = need = None
+    if READ_COUNTS:
+        rw = read_wood(fr)                                   # เช่น 1423/7 = มีไม้ 1423 ใช้ซ่อม 7
+        if rw:
+            have, need = rw
+            STATUS.wood, STATUS.wood_need = have, need
+            log(f"ไม้ที่มี {have} / ต้องใช้ {need} (ซ่อมได้อีก {have // need if need else '-'} ครั้ง)")
+            if need and have < need:
+                log("ไม้ไม่พอซ่อมเบ็ด")
+                return "nowood"
     STATUS.set("ซ่อมเบ็ด: กด Fix")
     log("กด Fix")
-    dev.tap(*pos)
+    dev.tap(fx, fy)
     time.sleep(REPAIR_DELAY)
-    pos = wait_icon(dev, icons, "equip_no", REPAIR_WAIT) if "equip_no" in icons else None
-    if pos is None:
+    got = wait_icon(dev, icons, "equip_no", REPAIR_WAIT) if "equip_no" in icons else None
+    if got is None:
         log("ไม่เจอปุ่ม Equip No")
         return False
+    ex, ey, fr2 = got
+    if READ_COUNTS:
+        rw2 = read_wood(fr2)                                 # หลังซ่อม เช่น 1416/0 = เหลือไม้ 1416
+        if rw2:
+            STATUS.wood = rw2[0]
+        elif have is not None and need is not None:
+            STATUS.wood = have - need
     STATUS.set("ซ่อมเบ็ด: กด Equip No")
     log("กด Equip No")
-    dev.tap(*pos)
+    dev.tap(ex, ey)
     time.sleep(REPAIR_DELAY)
-    log("ซ่อมเบ็ดเสร็จ")
+    log("ซ่อมเบ็ดเสร็จ" + (f" ไม้เหลือ {STATUS.wood}" if STATUS.wood is not None else ""))
     return True
 
 
@@ -682,6 +859,8 @@ def main():
     ring_hist = []
     bite_tapped = -99.0
     last_rod_check = 0.0
+    last_count_read = 0.0
+    count_miss = {}
 
     while True:
         t0 = time.time()
@@ -841,7 +1020,12 @@ def main():
                 STATUS.stop_reason = "เบ็ดแดง แต่ยังไม่มีไอคอน fix.png"
                 log("เบ็ดแดง แต่ยังไม่มีไอคอน fix.png (และ equip_no.png) หยุดบอท")
                 sys.exit(1)
-            if repair_rod(dev, icons, rod_info[1], rod_info[2]):
+            result = repair_rod(dev, icons, rod_info[1], rod_info[2])
+            if result == "nowood":
+                STATUS.stop_reason = "ไม้ไม่พอซ่อมเบ็ด"
+                log("ไม้หมด/ไม่พอซ่อมเบ็ด หยุดบอท")
+                sys.exit(1)
+            if result:
                 STATUS.repairs += 1
                 repair_fail = 0
             else:
@@ -854,6 +1038,11 @@ def main():
             last_action = time.time()
             continue
         red_count = 0
+
+        # ===== อ่านจำนวนเหยื่อ/อาหารที่เหลือจากแถบล่าง =====
+        if rod == "green" and READ_COUNTS and time.time() - last_count_read > COUNT_INTERVAL:
+            last_count_read = time.time()
+            update_counts(frame, icons, foods, count_miss)
 
         # ===== 2) เบ็ดเขียว -> กดตกปลา แล้วรอปลากิน =====
         if rod == "green" and hunger_on:
