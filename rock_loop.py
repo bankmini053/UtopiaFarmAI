@@ -134,6 +134,12 @@ SWEEP_STEPS = 5               # เดินติด: หมุนกล้อ�
 SWEEP_STEP_PX = 90            # ก้าวละกี่ px ของฉาก
 HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใกล้ตัวละคร (เหนือของที่ดรอป)
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
+HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
+HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
+ATTACK_TRY_DIST = 280         # ใกล้เท่านี้ (px อ้างอิง) หยุดเดินแล้วกดตี ตัวละครจะวิ่งเข้าหาหิน/ไม้เองจนถึงระยะตี
+PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
+PEEK_MAX = 4                  # ส่องไม่เกินกี่รอบต่อหินหนึ่งก้อน
+PEEK_NEARER = 0.85            # หินข้างๆ ต้องใกล้กว่าเป้าอย่างน้อยเท่านี้ (ระยะ/ระยะเป้า) ถึงเปลี่ยนเป้า
 ALIGN_STEP_CAP = 150          # หมุนกล้องทีละไม่เกินกี่ px ของฉาก (หมุนทีละนิดไปเรื่อยๆ)
 STALL_NEED = 2                # เดินแล้วภาพไม่ขยับติดกันกี่ครั้งถึงนับว่าติด (ของนิ่งไม่ขวางทางตรง)
 JUMP_UP = 0.30                # เลือดเป้าพุ่งขึ้นเกินนี้ = ก้อนเดิมแตกแล้ว ระบบล็อกก้อนใหม่เอง
@@ -1224,11 +1230,16 @@ def pickaxe_state(fr):
 _HAND_TPL = []
 
 
-def hand_template():
+def hand_templates():
     if not _HAND_TPL:
         import base64
-        _HAND_TPL.append(cv2.imdecode(np.frombuffer(base64.b64decode(HAND_TPL_B64), np.uint8), cv2.IMREAD_GRAYSCALE))
-    return _HAND_TPL[0]
+        for b in (HAND_TPL_B64, HAND_TPL2_B64):
+            _HAND_TPL.append(cv2.imdecode(np.frombuffer(base64.b64decode(b), np.uint8), cv2.IMREAD_GRAYSCALE))
+    return _HAND_TPL
+
+
+def hand_template():
+    return hand_templates()[0]
 
 
 def find_hand(fr):
@@ -1239,20 +1250,21 @@ def find_hand(fr):
     if sub.size == 0:
         return None
     hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
-    m = ((hsv[..., 1] < 55) & (hsv[..., 2] > 215)).astype(np.uint8) * 255
+    m = ((hsv[..., 1] < 65) & (hsv[..., 2] > 190)).astype(np.uint8) * 255
     n, lab, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    tpl = hand_template()
+    tpls = hand_templates()
     best = None
     for i in range(1, n):
         x, y, w, h, a = [int(v) for v in st[i]]
         rw, rh = w / fr.sx, h / fr.sy
-        if not (24 <= rw <= 46 and 26 <= rh <= 50) or a / float(w * h) < 0.35:
+        if not (22 <= rw <= 46 and 22 <= rh <= 50) or a / float(w * h) < 0.35:
             continue
         blob = (lab[y:y + h, x:x + w] == i).astype(np.uint8) * 255
-        t = cv2.resize(tpl, (w, h), interpolation=cv2.INTER_AREA)
-        inter = float(((blob > 0) & (t > 127)).sum())
-        union = float(((blob > 0) | (t > 127)).sum())
-        iou = inter / union if union else 0.0
+        iou = 0.0
+        for tpl in tpls:
+            t = cv2.resize(tpl, (w, h), interpolation=cv2.INTER_AREA)
+            union = float(((blob > 0) | (t > 127)).sum())
+            iou = max(iou, float(((blob > 0) & (t > 127)).sum()) / union if union else 0.0)
         sat = float(hsv[y:y + h, x:x + w, 1][lab[y:y + h, x:x + w] == i].mean())     # มือขาวบริสุทธิ์ (เมฆ/ฟ้ามีสีอมฟ้า)
         if iou >= 0.70 and sat <= 22 and (best is None or iou > best[0]):
             best = (iou, x1 + x + w // 2, y1 + y + h // 2)
@@ -2157,6 +2169,63 @@ class RockLoop:
         ui("🧱 ไม่ชิดหิน = มีของขวางจริง")
         return None
 
+    def _turn_back(self, total):
+        """หมุนกล้องกลับที่เดิม (ฉากต้องขยับ -total)"""
+        rem = -total
+        for _ in range(4):
+            if abs(rem) < 20:
+                break
+            got = self.cam.turn_by(max(-CAM_MAX_SHIFT, min(CAM_MAX_SHIFT, rem))) or 0.0
+            if abs(got) < 1:
+                break
+            rem -= got
+
+    def peek_sides(self, fr, rocks, tgt, dist):
+        """เดินไปหาเป้าแล้ว ส่องหินซ้าย/ขวา: หันกล้องให้หินข้างๆ มาอยู่ตรงหน้า (ตอนมองตรงจะเห็นระยะจริง) ถ้าใกล้กว่าเป้า = เปลี่ยนเป้า
+        ไม่ใกล้กว่า = หมุนกลับที่เดิม -> คืนหินก้อนใหม่ (กล้องหันตรงอยู่แล้ว) หรือ None"""
+        feet = fr.A("char_feet")
+        band = CAM_CENTER_BAND * fr.sx
+        tb = tgt["base"]
+        cands = []
+        for sgn in (-1, 1):
+            c = [r for r in rocks if r is not tgt and not self.blacklisted(r)
+                 and sgn * (r["bbox"][0] + r["bbox"][2] / 2.0 - feet[0]) > band * ALIGN_OUT
+                 and math.hypot(r["base"][0] - tb[0], r["base"][1] - tb[1]) > 60 * fr.sx
+                 and r["dist"] < 2.5 * max(dist, 150 * fr.sy)]
+            if c:
+                cands.append(min(c, key=lambda r: abs(r["bbox"][0] + r["bbox"][2] / 2.0 - feet[0])))
+        for cand in cands:
+            side = "ซ้าย" if cand["bbox"][0] + cand["bbox"][2] / 2.0 < feet[0] else "ขวา"
+            ui(f"👀 ส่องหินด้าน{side}ว่าใกล้กว่าไหม")
+            total, last, found = 0.0, cand["base"], cand
+            off = cand["bbox"][0] + cand["bbox"][2] / 2.0 - feet[0]
+            for _ in range(4):
+                sh = self.cam.turn_by(max(-CAM_MAX_SHIFT, min(CAM_MAX_SHIFT, -off * ALIGN_GAIN))) or 0.0
+                total += sh
+                last = (last[0] + sh, last[1])
+                f2 = self.frame()
+                rr, _ = find_rocks(f2, self.names, self.profiles)
+                near = sorted((r for r in rr if not self.blacklisted(r) and math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 1.3 * LOCK_RADIUS * f2.sx),
+                              key=lambda r: math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]))
+                if not near:
+                    found = None
+                    break
+                found, last = near[0], near[0]["base"]
+                off = found["bbox"][0] + found["bbox"][2] / 2.0 - f2.A("char_feet")[0]
+                if abs(off) <= band * ALIGN_IN:
+                    break
+            if found is not None:
+                fd = math.hypot(found["base"][0] - f2.A("char_feet")[0], found["base"][1] - f2.A("char_feet")[1])
+                save_live(draw_track(f2, rr, found, off, abs(off) <= band, fd))
+                if fd < PEEK_NEARER * dist and abs(off) <= band * ALIGN_OUT:
+                    ui(f"🔄 หินด้าน{side}ใกล้กว่า ({fd:.0f} < {dist:.0f}) เปลี่ยนเป้า")
+                    return found
+                ui(f"↩ หินด้าน{side}ไม่ใกล้กว่า ({fd:.0f} vs {dist:.0f}) หมุนกลับ")
+            self._turn_back(total)
+            fr = self.frame()
+            rocks, _ = find_rocks(fr, self.names, self.profiles)
+        return None
+
     def unstick(self, n, off):
         """ติดต้นไม้/หิน/พุ่มไม้: เบี่ยงข้างสลับซ้ายขวา เดินอ้อม ถ้ายังติดถอยหลังก่อน ติดเกิน UNSTICK_MAX = ยอมแพ้ก้อนนี้"""
         if n >= UNSTICK_MAX:
@@ -2176,7 +2245,7 @@ class RockLoop:
     def approach(self, rock):
         """เดินเข้าหาหิน: หินซ้าย/ขวา -> หมุนกล้อง, อยู่กลาง -> เดินตรง, ติดของขวาง -> เบี่ยง, ชิดแล้ว (หินใหญ่บังตัว/หายตอนชิด) -> ตี"""
         d, lost, last = self.dev, 0, rock["base"]
-        blocked = no_prog = stalls = 0
+        blocked = no_prog = stalls = walks = peeks = 0
         last_dist = None
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
@@ -2204,8 +2273,8 @@ class RockLoop:
             lost, last = 0, tgt["base"]
             dx, dy = tgt["base"][0] - feet[0], tgt["base"][1] - feet[1]
             dist = math.hypot(dx, dy)
-            if dist <= NEAR_DIST * fr.sy:
-                ui("📍 ชิดหินแล้ว")
+            if dist <= ATTACK_TRY_DIST * fr.sy:
+                ui("📍 ใกล้ระยะตีแล้ว → ลองกดตี")
                 return tgt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
@@ -2233,6 +2302,13 @@ class RockLoop:
                             break
                     last_dist = None
                     continue
+                walks += 1
+                if peeks < PEEK_MAX and walks % PEEK_EVERY == 1 and dist > ATTACK_TRY_DIST * 1.2 * fr.sy:
+                    peeks += 1
+                    new = self.peek_sides(fr, rocks, tgt, dist)
+                    if new is not None:                          # เจอหินข้างๆ ที่ใกล้กว่า = เปลี่ยนเป้า (หันตรงอยู่แล้ว)
+                        last, last_dist = new["base"], None
+                        continue
                 save_live(draw_track(fr, rocks, tgt, off, True, dist))
                 ui(f"🟢 ล็อกเป้า หันตรงแล้ว → เดินตรง ห่าง {dist:.0f}")
                 dx, dy = 0.0, -1.0
@@ -2393,9 +2469,9 @@ class RockLoop:
             seen = seen or bool(h)
             if k > 0 and seen and not h and find_pick_all(fr) is None:
                 break                                            # รูปมือหายแล้ว = ไม่มีของเหลือ
-            d.tap(*(h or fr.A("hand_guess")))
+            d.tap(*(h or (int(HAND_LOOT_POS[0] * fr.sx), int(HAND_LOOT_POS[1] * fr.sy))))
             if k == 0:
-                ui("🖐 กดรูปมือ" if h else "🖐 กดปุ่มมือ (ไม่เห็นรูปมือ กดตำแหน่งปุ่ม)")
+                ui("🖐 กดรูปมือ" if h else "🖐 กดตำแหน่งรูปมือ (ตรวจไม่เจอ)")
             nap(PICK_WAIT)
             fr = self.frame(fast=True)
             pa = find_pick_all(fr)
