@@ -128,6 +128,11 @@ PICK_WAIT = 0.4               # กดปุ่มมือแล้วรอก
 PICK_TRIES = 8                # กดปุ่มมือ/หา Pick All ซ้ำกี่รอบ
 CAM_SCAN_SLICES = 6           # มองหาหิน: หมุนรอบตัวแบ่งกี่ช่วง (6 = ช่วงละ 60°) ซ้าย -> เช็กภาพ -> ซ้าย -> เช็กภาพ
 CAM_SCAN_SHIFT = 850          # ฉากต้องเลื่อนกี่ px ต่อ 1 ช่วง (ประมาณ 60°) ปรับด้วย run --scan-shift
+LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อนเดิมต้องอยู่ห่างจากตำแหน่งที่ติดตามไว้ไม่เกินนี้ (px อ้างอิง) ไม่งั้นนับว่าเสียเป้า ไม่สลับไปก้อนอื่น
+ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
+ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
+ALIGN_GAIN = 0.85             # หมุนทีละ 85% ของที่เยื้อง กันหมุนเลยเป้า
+VIZ = True                    # เซฟภาพ debug/live.jpg ขีดเส้นแดง/เขียวแสดงเป้าที่ล็อก (ปิดด้วย run --no-viz)
 NAME_TILT = True              # อ่านชื่อไม่ได้ -> ก้มกล้องลง 1 ระยะแล้วอ่านใหม่ แล้วเงยกลับที่เดิม
 NAME_TILT_PX = 140            # ระยะลากก้มกล้อง (px) ต่อ 1 ระยะ
 BAR_LOST_RETRY = 4            # แถบเป้าหายตอนเลือดยังเหลือเยอะ: ตีต่ออีกกี่ครั้งก่อนสรุปว่าหลุดเป้า
@@ -1770,6 +1775,64 @@ def log_time_row(row):
 # =============================================================================
 # ตัวบอทวน
 # =============================================================================
+def draw_track(fr, rocks, tgt, off, aligned, dist, lost=False):
+    """วาดผลล็อกเป้าลงภาพ: หินทุกก้อน = กรอบเทา, เป้าที่ล็อก = กรอบ+เส้นจากตัวละคร (แดง = ยังไม่ตรง / เขียว = ล็อกและหันตรงแล้ว)"""
+    img = fr.img.copy()
+    feet = fr.A("char_feet")
+    for r in rocks:
+        x, y, w, h = r["bbox"]
+        cv2.rectangle(img, (int(x), int(y)), (int(x + w), int(y + h)), (170, 170, 170), 1)
+    cx = feet[0]
+    cv2.line(img, (cx, 0), (cx, img.shape[0]), (255, 255, 0), 1)             # แนวหน้าตัวละคร (เส้นฟ้าอ่อน)
+    if tgt is not None:
+        col = (0, 220, 0) if aligned else (0, 0, 255)
+        x, y, w, h = tgt["bbox"]
+        cv2.rectangle(img, (int(x), int(y)), (int(x + w), int(y + h)), col, 4)
+        cv2.line(img, (int(feet[0]), int(feet[1])), (int(tgt["base"][0]), int(tgt["base"][1])), col, 4)
+        cv2.circle(img, (int(tgt["base"][0]), int(tgt["base"][1])), 8, col, -1)
+        txt = ("LOCK OK  " if aligned else "TURNING  ") + f"dist={dist:.0f} off={off:+.0f}"
+    else:
+        col, txt = (0, 0, 255), "NO TARGET" if lost else "SEARCH"
+    cv2.rectangle(img, (0, img.shape[0] - 40), (img.shape[1], img.shape[0]), (0, 0, 0), -1)
+    cv2.putText(img, txt, (12, img.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 1.0, col, 2)
+    return img
+
+
+def save_live(img):
+    if not VIZ:
+        return
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        tmp = os.path.join(DEBUG_DIR, "live_tmp.jpg")
+        cv2.imwrite(tmp, img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        os.replace(tmp, os.path.join(DEBUG_DIR, "live.jpg"))
+    except Exception:
+        pass
+
+
+def start_viewer(port):
+    """เว็บดูสดเล็กๆ: เปิด http://127.0.0.1:PORT ในเบราว์เซอร์ จะเห็น debug/live.jpg รีเฟรชทุกวินาที"""
+    import http.server
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    with open(os.path.join(DEBUG_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write('<meta charset="utf-8"><title>บอทล็อกเป้า</title><body style="margin:0;background:#000">'
+                '<img id="i" style="width:100%"><script>setInterval(()=>{i.src="live.jpg?"+Date.now()},700)</script>')
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=DEBUG_DIR, **k)
+
+        def log_message(self, *a):
+            pass
+    try:
+        srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), H)
+    except OSError as e:
+        ui(f"⚠️ เปิดเว็บดูสดไม่ได้ ({e})")
+        return
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    ui(f"🖥 ดูสด: เปิด http://127.0.0.1:{port} ในเบราว์เซอร์")
+
+
 def k_report(bot, rnd, rock):
     bot.report_time(f"มองหาหิน รอบ{rnd + 1} {'เจอ' if rock else 'ไม่เจอ'}")
     return rock is not None
@@ -2021,10 +2084,13 @@ class RockLoop:
                 return self._arrived(fr)
             rocks, _ = find_rocks(fr, self.names, self.profiles)
             rocks = [r for r in rocks if not self.blacklisted(r)]
-            same = [r for r in rocks if math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 170 * fr.sx]
-            tgt = (same or rocks or [None])[0]
+            same = sorted((r for r in rocks if math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < LOCK_RADIUS * fr.sx),
+                          key=lambda r: math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]))
+            tgt = same[0] if same else None                      # ล็อกก้อนเดิมเท่านั้น ไม่สลับไปก้อนอื่น
             if tgt is None:
                 lost += 1
+                save_live(draw_track(fr, rocks, None, 0, False, 0, lost=True))
+                ui(f"🔴 เสียเป้า ({lost}/3)")
                 if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy and self.near_pixels(fr) >= LOST_NEAR_PIX:
                     ui("📍 ชิดหินแล้ว (หินบังกล้อง)")
                     return self._arrived(fr)
@@ -2046,22 +2112,27 @@ class RockLoop:
             side = "ซ้าย" if off < -band else ("ขวา" if off > band else "กลาง")
             if self.cam.ok:
                 log(f"[เดิน] ก้าว {step + 1}: หินอยู่ด้าน{side} (เยื้อง {off:+.0f}px) ห่าง {dist:.0f}px")
-                if side != "กลาง":
-                    ui(f"🎥 หินอยู่{side} → หมุนกล้อง{side}")
+                if abs(off) > band * ALIGN_OUT:
+                    save_live(draw_track(fr, rocks, tgt, off, False, dist))
+                    ui(f"🔴 หินอยู่{side} {abs(off):.0f}px → ล็อกแล้วหมุนกล้องให้ตรง")
                     for _ in range(CAM_ALIGN_MAX):
-                        self.cam.turn_by(-off)
+                        sh = self.cam.turn_by(-off * ALIGN_GAIN)
+                        last = (last[0] + sh, last[1])               # หินเลื่อนตามฉาก คาดตำแหน่งใหม่ไว้ก่อน ไม่สลับก้อน
                         fr = self.frame()
                         rr, _ = find_rocks(fr, self.names, self.profiles)
-                        near = [r for r in rr if math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 260 * fr.sx]
+                        near = sorted((r for r in rr if not self.blacklisted(r) and math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 1.3 * LOCK_RADIUS * fr.sx),
+                                      key=lambda r: math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]))
                         if not near:
                             break
                         last = near[0]["base"]
                         off = near[0]["bbox"][0] + near[0]["bbox"][2] / 2.0 - fr.A("char_feet")[0]
-                        if abs(off) <= band:
+                        save_live(draw_track(fr, rr, near[0], off, abs(off) <= band * ALIGN_IN, math.hypot(*(np.array(near[0]["base"]) - np.array(fr.A("char_feet"))))))
+                        if abs(off) <= band * ALIGN_IN:
                             break
                     last_dist = None
                     continue
-                ui(f"🚶 เดินตรง ห่าง {dist:.0f}")
+                save_live(draw_track(fr, rocks, tgt, off, True, dist))
+                ui(f"🟢 ล็อกเป้า หันตรงแล้ว → เดินตรง ห่าง {dist:.0f}")
                 dx, dy = 0.0, -1.0
             else:
                 ui(f"🚶 เดิน ห่าง {dist:.0f}")
@@ -2478,6 +2549,8 @@ def main():
     r.add_argument("--pick-wait", type=float, help="กดปุ่มมือแล้วรอกี่วินาทีก่อนหา Pick All (ค่าเริ่ม 0.4)")
     r.add_argument("--scan-shift", type=int, help="ฉากเลื่อนกี่ px ต่อช่วงหมุน 60° (ค่าเริ่ม 850 มากขึ้น=หมุนมากขึ้น)")
     r.add_argument("--clock-interval", type=float, help="อ่านนาฬิกาในเกมทุกกี่วินาที (ค่าเริ่ม 3 น้อยลง=อ่านถี่ขึ้น แต่ช้าลง)")
+    r.add_argument("--no-viz", action="store_true", help="ไม่เซฟภาพ debug/live.jpg (เส้นแดง/เขียวแสดงเป้าที่ล็อก)")
+    r.add_argument("--view", type=int, nargs="?", const=8765, help="เปิดเว็บดูภาพล็อกเป้าสด (พอร์ตเริ่มต้น 8765)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
     r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
@@ -2501,13 +2574,15 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL
+    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL, VIZ
     if getattr(args, "no_guard", False):
         GUARD = False
     if getattr(args, "collect_delay", None) is not None:
         COLLECT_DELAY = max(0.0, args.collect_delay)
     if getattr(args, "pick_wait", None) is not None:
         PICK_WAIT = max(0.05, args.pick_wait)
+    if getattr(args, "no_viz", False):
+        VIZ = False
     if getattr(args, "clock_interval", None) is not None:
         CLOCK_READ_INTERVAL = max(0.0, args.clock_interval)
     if getattr(args, "scan_shift", None):
@@ -2568,6 +2643,8 @@ def main():
     bot = RockLoop(dev, profiles, args.period)
     _to_file("", "=" * 20 + " เริ่มรัน " + "=" * 20)
     install_stop_handlers()
+    if getattr(args, "view", None):
+        start_viewer(args.view)
     try:
         if not (args.no_countdown or args.image):
             countdown(COUNTDOWN_SEC, "สลับเข้าเกม Utopia: Origin ได้เลย!")
