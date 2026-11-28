@@ -115,7 +115,7 @@ HOLD_MS = 1200                # กดค้างดาบครั้งละ
 HIT_TIMEOUT = 150             # ตีหินก้อนเดียวไม่เกินกี่วินาที
 HP_NO_DROP_RETRY = 2          # เลือดไม่ลดกี่รอบติดกัน -> ขยับเข้าไปอีกนิดแล้วกดใหม่
 TIRED_REST_SEC = 12           # รอสแตมิน่าฟื้น
-STEP_MS_MIN, STEP_MS_MAX = 350, 900
+STEP_MS_MIN, STEP_MS_MAX = 350, 1500
 NEAR_TRUST_DIST = 170          # ใช้ 'สีหินรอบตัวเยอะ = ชิดแล้ว' ได้ก็ต่อเมื่อหินที่เห็นอยู่ไม่เกินระยะนี้ (กันนับพื้น/ตัวละครผิด)
 WALK_MS_PER_PX = 18            # เดินเข้าหาหินตอนตีไม่โดน: ms ต่อ px ที่ยังขาด (ตัวละครเดินช้า ~55px/วิ)
 NEAR_DIST = 105               # ระยะ (px อ้างอิง) เท้า->ฐานหิน ที่ลองตีได้
@@ -1540,12 +1540,28 @@ class Camera:
         except Exception:
             return False
 
+    def verify(self):
+        """หมุนกล้องซ้าย-ขวาจริงเพื่อเช็กว่ายังหมุนได้ (ทุกครั้งที่เริ่ม) แล้วหมุนกลับที่เดิม -> True/False"""
+        rs = []
+        for d in (-110, 110):
+            dx, dy = self.drag(d)
+            ui(f"🎥 หมุนทดสอบ {'ซ้าย' if d < 0 else 'ขวา'} → ฉากขยับ {dx:+.0f}px")
+            if abs(dx) >= CAM_MIN_SHIFT and abs(dx) >= 1.5 * abs(dy):
+                rs.append(dx / d)
+        if len(rs) == 2 and rs[0] * rs[1] > 0:
+            self.ratio = float(np.median(rs))
+            return True
+        return False
+
     def ensure(self):
         if getattr(self.dev, "dry", False):
             return False
         if self.load():
             log(f"[กล้อง] ใช้ค่าที่วัดไว้ ({TOUCH_BACKEND['camera']}, {CAM_DRAG_MS}ms, แกน {self.axis}, อัตรา {self.ratio:+.2f})")
-            return True
+            if self.verify():
+                return True
+            ui("🎥 ค่าที่จำไว้ใช้ไม่ได้ → วัดกล้องใหม่")
+            self.ok = False
         return self.calibrate()
 
     def sweep_left(self):
@@ -1927,7 +1943,7 @@ class RockLoop:
             if dist <= NEAR_DIST * fr.sy:
                 ui("📍 ชิดหินแล้ว")
                 return tgt
-            ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * 1.6)))
+            ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
             off = cx - feet[0]                                   # + = หินอยู่ขวาของกลางจอ
             band = CAM_CENTER_BAND * fr.sx
@@ -1959,12 +1975,12 @@ class RockLoop:
             nap(0.15)
             fr2 = d.grab()
             moved = fr2 is not None and frame_diff(before, fr2.img) >= STUCK_FRAME_DIFF
-            if last_dist is not None and dist > last_dist - PROGRESS_MIN * fr.sy:
+            if last_dist is not None and dist > last_dist - max(2.5, 0.015 * dist) * fr.sy:    # หินไกล: ระยะในภาพลดช้าตามธรรมชาติ
                 no_prog += 1
             else:
                 no_prog = 0
             last_dist = dist
-            if not moved or no_prog >= 2:
+            if not moved or no_prog >= 3:
                 blocked += 1
                 no_prog = 0
                 if not self.unstick(blocked, off):
@@ -2102,7 +2118,11 @@ class RockLoop:
         self.cam.ensure()
         ui("🎥 กล้อง: " + (f"ใช้ได้ (ลากแนว{'นอน' if self.cam.axis == 'x' else 'ตั้ง'})" if self.cam.ok else "หมุนไม่ได้ → เดินหาแทน"))
         ui(f"🕐 {self._tstr} {PERIOD_TH[self.period]} ({self._src})")
-        if not self.search_pt:
+        if not COORD_REFS:
+            self.search_pt = None
+            self.box_pt = None
+            ui("⏭ ไม่ได้ใส่ --pos → ไม่เดินตามพิกัด (หาหินรอบตัว)")
+        elif not self.search_pt:
             c = self.nav.read_stable()
             if c:
                 self.search_pt = c
@@ -2110,7 +2130,7 @@ class RockLoop:
             else:
                 ui("⚠️ อ่านพิกัดไม่ได้ → ไม่เดินตามพิกัด")
         if not self.box_pt:
-            log("ไม่ได้ตั้ง BOX_COORD -> จะข้ามขั้นตอนไปกล่อง")
+            log("ไม่ได้ตั้ง BOX_COORD/--pos -> จะข้ามขั้นตอนไปกล่อง")
 
     def run(self, max_rounds=0):
         self.setup()
@@ -2307,7 +2327,7 @@ def main():
     r.add_argument("--max-rounds", type=int, default=0, help="วนกี่รอบแล้วหยุด (0 = ไม่หยุด)")
     r.add_argument("--period", choices=list(PERIODS), help="บังคับช่วงเวลา (ทดสอบ)")
     r.add_argument("--no-countdown", action="store_true")
-    r.add_argument("--pos", help="พิกัดจริงตอนเริ่ม เช่น 6356,14178 (ใช้ซ่อมเลขที่ OCR อ่านเพี้ยน และจำไว้ใน pos_ref.json)")
+    r.add_argument("--pos", nargs="+", help="พิกัดจริงตอนเริ่ม เช่น 6356,14178 (ใช้ซ่อมเลขที่ OCR อ่านเพี้ยน และจำไว้ใน pos_ref.json)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
     r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
@@ -2331,7 +2351,7 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT, QUIET, GUARD
+    global LAYOUT, QUIET, GUARD, SEARCH_COORD
     if getattr(args, "no_guard", False):
         GUARD = False
     if args.cmd != "stop":                       # ไฟล์ STOP เก่าที่ค้างอยู่ ต้องไม่ทำให้รันรอบใหม่หยุดทันที
@@ -2345,8 +2365,11 @@ def main():
         load_pos_ref()
         if getattr(args, "pos", None):
             try:
-                set_coord_ref([int(v) for v in args.pos.replace(" ", "").split(",")][:2])
+                pos = [int(v) for v in "".join(args.pos).replace(" ", "").split(",") if v][:2]
+                set_coord_ref(pos)
                 save_pos_ref()
+                if SEARCH_COORD is None:
+                    SEARCH_COORD = tuple(pos)
             except Exception:
                 sys.exit("--pos ต้องเป็นรูปแบบ X,Y เช่น --pos 6356,14178")
     if args.cmd == "run":
