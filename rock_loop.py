@@ -137,7 +137,7 @@ HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใ�
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
 HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
 HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
-ATTACK_TRY_DIST = 110         # ฐานหินห่างจาก 'ตัวละคร (เส้นเท้า->หัว)' ไม่เกินนี้ (px อ้างอิง) = ชิดตัว/ชิดหน้า หยุดเดินแล้วกดตีเลย ไม่หมุนกล้อง
+ATTACK_TRY_DIST = 70          # ฐานหินห่างจาก 'ตัวละคร (เส้นเท้า->หัว)' ไม่เกินนี้ (px อ้างอิง) = ชิดตัว/ชิดหน้า หยุดเดินแล้วกดตีเลย ไม่หมุนกล้อง
 SLOT1_AT_HP = 0.30            # เลือดเป้าเหลือไม่เกินนี้: กดช่อง 1 (ขวาน) 1 ครั้งแบบช้าๆ แล้วตีปกติต่อ (0 = ปิด)
 SLOT1_PRESS_MS = 450          # กดช่อง 1 ค้างกี่ ms (ช้าๆ แต่ไม่ช้ามาก)
 PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
@@ -151,6 +151,7 @@ REPAIR_WAIT = 0.9             # รอหน้าต่างซ่อมขึ
 LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อนเดิมต้องอยู่ห่างจากตำแหน่งที่ติดตามไว้ไม่เกินนี้ (px อ้างอิง) ไม่งั้นนับว่าเสียเป้า ไม่สลับไปก้อนอื่น
 ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
 ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
+SIDE_TRY_DIST = 90             # ระหว่างเดิน ถ้าเห็นหินก้อนอื่นชิดข้างตัวใกล้ขนาดนี้ ลองกดตีก้อนนั้นเลย
 LANE_HALF = 90                # 'เส้นแดง' ทางตรงหน้าตัวละคร: หินต้องอยู่ในช่วงกลางจอ ±นี้ (px อ้างอิง) ถึงจะเดินตรง/ตีได้
 LANE_IN = 60                  # หมุนกล้องจนหินเข้ามาอยู่ห่างกลางจอไม่เกินนี้ (ในเส้นสบายๆ)
 ALIGN_MAX_TURNS = 8           # หมุนกล้องปรับเข้าเส้นไม่เกินกี่ครั้ง
@@ -2291,6 +2292,7 @@ class RockLoop:
         blocked = no_prog = stalls = walks = peeks = 0
         last_dist = last_seg = None
         last_inlane = False
+        side_tries = 0
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
             feet = fr.A("char_feet")
@@ -2323,6 +2325,8 @@ class RockLoop:
             seg = seg_dist(fr, tgt["base"])
             last_seg = seg
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
+            if seg < 160 * fr.sy:                                # ใกล้แล้ว เดินสั้นๆ ให้ชิดเท้าพอดี ไม่เลยหิน
+                ms = int(min(ms, max(250, seg * WALK_MS_PER_PX * 0.8)))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
             off = cx - feet[0]                                   # + = หินอยู่ขวาของกลางจอ
             band = CAM_CENTER_BAND * fr.sx
@@ -2333,6 +2337,14 @@ class RockLoop:
                 save_live(draw_track(fr, rocks, tgt, off, True, dist))
                 ui("📍 ชิดตัวแล้ว อยู่ในเส้น → ลองกดตี")
                 return tgt
+            if side_tries < 2:                                   # หินข้างๆ ที่ชิดตัวอยู่แล้ว: ลองตีเลย (ตัวละครจะวิ่งเข้าหาเอง)
+                sn = [r for r in rocks if r is not tgt and seg_dist(fr, r["base"]) <= SIDE_TRY_DIST * fr.sy]
+                if sn:
+                    side_tries += 1
+                    sn.sort(key=lambda r: seg_dist(fr, r["base"]))
+                    save_live(draw_track(fr, rocks, sn[0], 0.0, True, 0.0))
+                    ui("📍 เห็นหินชิดข้างตัว → ลองกดตี")
+                    return sn[0]
             if self.cam.ok:
                 log(f"[เดิน] ก้าว {step + 1}: หินอยู่ด้าน{side} (เยื้อง {off:+.0f}px) ห่าง {dist:.0f}px")
                 if not inlane:
