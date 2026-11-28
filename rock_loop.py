@@ -70,6 +70,7 @@ ANCHORS = {
     "sword":         (1041, 539),   # ปุ่มดาบ (กดค้างเพื่อตี)
     "hand_guess":    (867, 440),    # ปุ่มมือเก็บของ (วงกลมเหนือปุ่มวิ่ง ขึ้นเมื่อมีของให้เก็บ)
     "char_feet":     (605, 548),    # เท้าตัวละคร
+    "char_head":     (605, 330),    # หัวตัวละคร (ตัวละครนอนยาวตามแนวตั้งในภาพแนวนอน เท้าล่าง หัวบน)
     "camera_start":  (929, 360),    # จุดเริ่มลากกล้อง (เท่ากับที่ลากจริง)
     "pickaxe_slot":  (370, 676),    # ช่องของที่ 1 = ที่ขุด (กดตอนขวานแดง = เปิดหน้าซ่อม)
     "repair_btn":    (605, 513),    # ปุ่ม Fix (ซ่อมเสร็จจะเปลี่ยนเป็น Equip Now ตำแหน่งเดิม)
@@ -136,8 +137,9 @@ HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใ�
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
 HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
 HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
-ATTACK_TRY_DIST = 165         # ใกล้เท่านี้ (px อ้างอิง เท้า->ฐานหิน) = หินชิดหน้าตัวละคร หยุดเดินแล้วกดตี (280 ตีไม่โดน 218 ก็ยังไม่โดน)
-SLOT1_AT_HP = 0.30            # เลือดเป้าเหลือไม่เกินนี้ ตีด้วยการกดช่อง 1 (ขวาน) แทนปุ่มดาบ ตัวละครจะได้ไม่วิ่งไปตีหินก้อนข้างๆ (0 = ปิด)
+ATTACK_TRY_DIST = 110         # ฐานหินห่างจาก 'ตัวละคร (เส้นเท้า->หัว)' ไม่เกินนี้ (px อ้างอิง) = ชิดตัว/ชิดหน้า หยุดเดินแล้วกดตีเลย ไม่หมุนกล้อง
+SLOT1_AT_HP = 0.30            # เลือดเป้าเหลือไม่เกินนี้: กดช่อง 1 (ขวาน) 1 ครั้งแบบช้าๆ แล้วตีปกติต่อ (0 = ปิด)
+SLOT1_PRESS_MS = 450          # กดช่อง 1 ค้างกี่ ms (ช้าๆ แต่ไม่ช้ามาก)
 PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
 PEEK_MAX = 4                  # ส่องไม่เกินกี่รอบต่อหินหนึ่งก้อน
 PEEK_NEARER = 0.85            # หินข้างๆ ต้องใกล้กว่าเป้าอย่างน้อยเท่านี้ (ระยะ/ระยะเป้า) ถึงเปลี่ยนเป้า
@@ -1862,6 +1864,14 @@ def log_time_row(row):
 # =============================================================================
 # ตัวบอทวน
 # =============================================================================
+def seg_dist(fr, pt):
+    """ระยะจากจุด pt ถึงตัวละคร (เส้นตรงจากเท้าถึงหัว) -> ใกล้ = หินชิดข้างตัว/ชิดหน้า (ระยะเท้า->ฐานหินไม่พอ เพราะตัวละครยาวราว 220px)"""
+    hx, hy = fr.A("char_head")
+    fx, fy = fr.A("char_feet")
+    cy = min(max(pt[1], hy), fy)
+    return math.hypot(pt[0] - hx, pt[1] - cy)
+
+
 def draw_track(fr, rocks, tgt, off, aligned, dist, lost=False):
     """วาดผลล็อกเป้าลงภาพ: หินทุกก้อน = กรอบเทา, เป้าที่ล็อก = กรอบ+เส้นจากตัวละคร (แดง = ยังไม่ตรง / เขียว = ล็อกและหันตรงแล้ว)"""
     img = fr.img.copy()
@@ -1941,7 +1951,6 @@ class RockLoop:
         self._tkey, self._tui = None, 0.0
         self._nosword = self._nocoord = 0
         self._tcoord = time.time()
-        self.slot_ok = True
         self.stats = {"ตีสำเร็จ": 0, "เก็บ": 0, "กลับบ้านสำเร็จ": 0, "รอบ": 0}
 
     # ---------------------------------------------------------------- พื้นฐาน
@@ -2248,7 +2257,7 @@ class RockLoop:
         """เดินเข้าหาหิน: หินซ้าย/ขวา -> หมุนกล้อง, อยู่กลาง -> เดินตรง, ติดของขวาง -> เบี่ยง, ชิดแล้ว (หินใหญ่บังตัว/หายตอนชิด) -> ตี"""
         d, lost, last = self.dev, 0, rock["base"]
         blocked = no_prog = stalls = walks = peeks = 0
-        last_dist = None
+        last_dist = last_seg = None
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
             feet = fr.A("char_feet")
@@ -2264,6 +2273,9 @@ class RockLoop:
                 lost += 1
                 save_live(draw_track(fr, rocks, None, 0, False, 0, lost=True))
                 ui(f"🔴 เสียเป้า ({lost}/3)")
+                if last_seg is not None and last_seg <= 1.8 * ATTACK_TRY_DIST * fr.sy:
+                    ui("📍 หินหายตอนชิดตัว (ตัวละครบังหิน) → ลองกดตี")
+                    return self._arrived(fr)
                 if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy and self.near_pixels(fr) >= LOST_NEAR_PIX:
                     ui("📍 ชิดหินแล้ว (หินบังกล้อง)")
                     return self._arrived(fr)
@@ -2275,8 +2287,10 @@ class RockLoop:
             lost, last = 0, tgt["base"]
             dx, dy = tgt["base"][0] - feet[0], tgt["base"][1] - feet[1]
             dist = math.hypot(dx, dy)
-            if dist <= ATTACK_TRY_DIST * fr.sy:
-                ui("📍 ใกล้ระยะตีแล้ว → ลองกดตี")
+            seg = seg_dist(fr, tgt["base"])
+            last_seg = seg
+            if seg <= ATTACK_TRY_DIST * fr.sy:
+                ui("📍 ชิดตัวแล้ว → ลองกดตี")
                 return tgt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
@@ -2305,7 +2319,7 @@ class RockLoop:
                     last_dist = None
                     continue
                 walks += 1
-                if peeks < PEEK_MAX and walks % PEEK_EVERY == 1 and dist > ATTACK_TRY_DIST * 1.2 * fr.sy:
+                if peeks < PEEK_MAX and walks % PEEK_EVERY == 1 and seg > ATTACK_TRY_DIST * 1.5 * fr.sy:
                     peeks += 1
                     new = self.peek_sides(fr, rocks, tgt, dist)
                     if new is not None:                          # เจอหินข้างๆ ที่ใกล้กว่า = เปลี่ยนเป้า (หันตรงอยู่แล้ว)
@@ -2365,7 +2379,7 @@ class RockLoop:
                 dx, dy = rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1]
                 dist = math.hypot(dx, dy)
                 ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เข้าไปอีก {dist:.0f}")
-                ms = int(min(2500, max(500, (dist - NEAR_DIST * fr.sy) * WALK_MS_PER_PX)))
+                ms = int(min(1500, max(400, seg_dist(fr, rocks[0]["base"]) * WALK_MS_PER_PX * 0.6)))
                 d.joystick(dx, dy, ms)
             else:
                 ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) ดันตรง")
@@ -2403,8 +2417,7 @@ class RockLoop:
         """ตีรัวจนเลือดเป้าหมดหมด -> 'empty' | 'gone' (แถบหาย) | 'stuck' (เลือดไม่ลด) | 'timeout'
         แตะดาบรัว BURST_TAPS ครั้งแล้วค่อยอ่านเลือด (ไม่ใช้นาฬิกา/ยามในลูปนี้ให้เร็ว) เหนื่อย = พักแล้วตีต่อ"""
         d, t0, last_hp, stale, nudges, lost = self.dev, time.time(), None, 0, 0, 0
-        slot_prev = slot_said = False
-        slot_stale = 0
+        slot_done = False
         while time.time() - t0 < HIT_TIMEOUT:
             fr = self.frame(fast=True)
             if banner_present(fr):
@@ -2440,11 +2453,6 @@ class RockLoop:
                 ui("⛏ เลือดหมดแล้ว")
                 return "empty"
             ui(f"⛏ ตีรัว เลือด {bar['hp'] * 100:.0f}%")
-            if slot_prev and last_hp is not None:
-                slot_stale = slot_stale + 1 if bar["hp"] >= last_hp - 0.01 else 0
-                if slot_stale >= 2:                              # กดช่อง 1 แล้วเลือดไม่ลด 2 รอบ (กดคู่ = ขวานอยู่ที่เดิม) กลับไปใช้ปุ่มดาบ
-                    self.slot_ok = False
-                    ui("⚠️ กดช่อง 1 แล้วเลือดไม่ลด → กลับไปใช้ปุ่มดาบ")
             if last_hp is not None and bar["hp"] >= last_hp - 0.01:
                 stale += 1
             else:
@@ -2461,14 +2469,12 @@ class RockLoop:
                     continue
                 ui("⛏ เลือดไม่ลด ขยับเข้าไปอีกนิด")
                 d.joystick(0, -1, 300)
-            slot_prev = bool(SLOT1_AT_HP) and self.slot_ok and bar["hp"] <= SLOT1_AT_HP
-            if slot_prev:
-                if not slot_said:
-                    slot_said = True
-                    ui(f"🔢 เลือดเหลือ ≤{SLOT1_AT_HP * 100:.0f}% → กดช่อง 1 ตี (ไม่วิ่งไปหินข้างๆ)")
-                d.burst(*fr.A("pickaxe_slot"), 1)
-            else:
-                d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
+            if SLOT1_AT_HP and not slot_done and bar["hp"] <= SLOT1_AT_HP:
+                slot_done = True                                 # เลือดเหลือน้อย: กดช่อง 1 ครั้งเดียว ช้าๆ แล้วตีปกติต่อ
+                ui(f"🔢 เลือดเหลือ ≤{SLOT1_AT_HP * 100:.0f}% → กดช่อง 1 (ช้าๆ 1 ครั้ง)")
+                d.hold(*fr.A("pickaxe_slot"), SLOT1_PRESS_MS)
+                nap(0.3)
+            d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
         ui("⚠️ ตีนานเกินกำหนด")
         return "timeout"
 
