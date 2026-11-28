@@ -71,15 +71,17 @@ ANCHORS = {
     "hand_guess":    (835, 478),    # ปุ่มมือเก็บของ
     "char_feet":     (605, 548),    # เท้าตัวละคร
     "camera_start":  (929, 360),    # จุดเริ่มลากกล้อง (เท่ากับที่ลากจริง)
-    "pickaxe_slot":  (277, 674),    # ช่องของที่ 1 = ที่ขุด
+    "pickaxe_slot":  (370, 676),    # ช่องของที่ 1 = ที่ขุด (กดตอนขวานแดง = เปิดหน้าซ่อม)
+    "repair_btn":    (605, 513),    # ปุ่ม Fix (ซ่อมเสร็จจะเปลี่ยนเป็น Equip Now ตำแหน่งเดิม)
+    "repair_close":  (808, 172),    # ปุ่ม X ปิดหน้าซ่อม
 }
 ROI = {                              # (x1, y1, x2, y2)
     "clock":      (0, 4, 64, 32),
-    "durability": (292, 652, 320, 710),   # แถบความทนทานข้างไอคอนที่ขุด
+    "durability": (335, 698, 405, 712),   # แถบความทนทานใต้ไอคอนที่ขุด (แดง = ขวานพัง)
     "bag_ring":   (968, 636, 1046, 712),  # วงแหวนรอบไอคอนกระเป๋า
     "target_bar": (240, 0, 970, 110),     # แถบชื่อ+เลือดเป้าหมายกลางบน
     "dialog":     (330, 290, 880, 560),   # หน้าต่าง Pick All
-    "repair":     (380, 40, 840, 640),    # หน้าต่างซ่อมที่ขุด
+    "repair":     (385, 150, 832, 552),    # หน้าต่างซ่อมที่ขุด
 }
 UI_EXCLUDE = [                        # โซน UI ที่ไม่มองหาหิน
     (0, 0, 195, 205), (30, 205, 260, 280), (195, 0, 480, 50), (200, 55, 425, 230),
@@ -130,6 +132,13 @@ CAM_SCAN_SLICES = 6           # มองหาหิน: หมุนรอบ�
 CAM_SCAN_SHIFT = 850          # ฉากต้องเลื่อนกี่ px ต่อ 1 ช่วง (ประมาณ 60°) ปรับด้วย run --scan-shift
 SWEEP_STEPS = 5               # เดินติด: หมุนกล้องไปขวาทีละนิดกี่ก้าวเพื่อดูว่าชิดหินแล้วหรือยัง (แล้วหมุนกลับที่เดิม)
 SWEEP_STEP_PX = 90            # ก้าวละกี่ px ของฉาก
+HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใกล้ตัวละคร (เหนือของที่ดรอป)
+HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
+ALIGN_STEP_CAP = 150          # หมุนกล้องทีละไม่เกินกี่ px ของฉาก (หมุนทีละนิดไปเรื่อยๆ)
+STALL_NEED = 2                # เดินแล้วภาพไม่ขยับติดกันกี่ครั้งถึงนับว่าติด (ของนิ่งไม่ขวางทางตรง)
+JUMP_UP = 0.30                # เลือดเป้าพุ่งขึ้นเกินนี้ = ก้อนเดิมแตกแล้ว ระบบล็อกก้อนใหม่เอง
+SINGLE_TAP_HP = 0.30          # เลือดเหลือน้อยกว่านี้ตีทีละครั้ง กันตีเลยไปโดนก้อนข้างๆ
+REPAIR_WAIT = 0.9             # รอหน้าต่างซ่อมขึ้นหลังกดแต่ละครั้ง
 LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อนเดิมต้องอยู่ห่างจากตำแหน่งที่ติดตามไว้ไม่เกินนี้ (px อ้างอิง) ไม่งั้นนับว่าเสียเป้า ไม่สลับไปก้อนอื่น
 ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
 ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
@@ -630,6 +639,12 @@ def profiles_for(m):
     return names
 
 
+def light_ok(best, img):
+    """เวลาที่อ่านได้สอดคล้องกับความสว่างของฉากไหม (ตอนเช้า OCR มักเพี้ยน): ตรงกัน หรือฉากเป็น dawn (รอยต่อ) = ผ่าน"""
+    v = visual_period(img)
+    return v in profiles_for(best) or v == "dawn" or minutes_to_period(best) == "dawn"
+
+
 def visual_period(img):
     """เดาช่วงเวลาจากแสงพื้นหญ้าหน้าตัวละคร (ทดสอบกับภาพจริง 30 ภาพ) -> day | dawn(รวมค่ำ) | night"""
     h, w = img.shape[:2]
@@ -813,6 +828,9 @@ class ClockReader:
         if not cands:
             return
         best, n = Counter(cands).most_common(1)[0]
+        if n < 4 and not light_ok(best, fr.img) and not (self.last_min is not None and self._consistent(best, now) and n >= 3):
+            log(f"[เวลา] อ่านได้ {fmt_min(best)} แต่ไม่ตรงกับความสว่างฉาก ({visual_period(fr.img)}) -> ไม่เชื่อ")
+            return
         if n >= 2 and (self.last_min is None or self._consistent(best, now) or n >= 3):
             self._accept(best, now)
             self.source = "ocr"
@@ -840,7 +858,13 @@ class ClockReader:
         self.update(fr)
         m = self.now_minutes()
         if m is not None:
-            return profiles_for(m), minutes_to_period(m), fmt_min(m), self.source
+            names, per, src = profiles_for(m), minutes_to_period(m), self.source
+            v = visual_period(fr.img)
+            if v not in names:                       # เวลากับแสงฉากขัดกัน (ตอนเช้า/ค่ำ) ใช้โทนของแสงจริงร่วมด้วย
+                names = names + [v]
+                if v == "night" and per == "day":
+                    per, src = "night", "แสง"
+            return names, per, fmt_min(m), src
         if CLOCK_FALLBACK_VISUAL:
             p = visual_period(fr.img)
             return ([p, "dawn"] if p != "dawn" else ["dawn"]), p, "--:--", "visual"
@@ -1195,6 +1219,54 @@ def pickaxe_state(fr):
     if ((((H <= 9) | (H >= 171)) & (S > 130) & (V > 130)).sum()) >= 6:
         return "broken"
     return "unknown"
+
+
+_HAND_TPL = []
+
+
+def hand_template():
+    if not _HAND_TPL:
+        import base64
+        _HAND_TPL.append(cv2.imdecode(np.frombuffer(base64.b64decode(HAND_TPL_B64), np.uint8), cv2.IMREAD_GRAYSCALE))
+    return _HAND_TPL[0]
+
+
+def find_hand(fr):
+    """รูปมือสีขาวที่ลอยใกล้ตัวละคร (ของที่ดรอป/เก็บได้) -> (x, y) กลางรูปมือ | None"""
+    x1, y1, x2, y2 = fr.box(HAND_ZONE)
+    x1, y1 = max(0, x1), max(0, y1)
+    sub = fr.img[y1:y2, x1:x2]
+    if sub.size == 0:
+        return None
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    m = ((hsv[..., 1] < 55) & (hsv[..., 2] > 215)).astype(np.uint8) * 255
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    tpl = hand_template()
+    best = None
+    for i in range(1, n):
+        x, y, w, h, a = [int(v) for v in st[i]]
+        rw, rh = w / fr.sx, h / fr.sy
+        if not (24 <= rw <= 46 and 26 <= rh <= 50) or a / float(w * h) < 0.35:
+            continue
+        blob = (lab[y:y + h, x:x + w] == i).astype(np.uint8) * 255
+        t = cv2.resize(tpl, (w, h), interpolation=cv2.INTER_AREA)
+        inter = float(((blob > 0) & (t > 127)).sum())
+        union = float(((blob > 0) | (t > 127)).sum())
+        iou = inter / union if union else 0.0
+        sat = float(hsv[y:y + h, x:x + w, 1][lab[y:y + h, x:x + w] == i].mean())     # มือขาวบริสุทธิ์ (เมฆ/ฟ้ามีสีอมฟ้า)
+        if iou >= 0.70 and sat <= 22 and (best is None or iou > best[0]):
+            best = (iou, x1 + x + w // 2, y1 + y + h // 2)
+    return (best[1], best[2]) if best else None
+
+
+def repair_dialog_open(fr):
+    """หน้าต่าง Equipment Repair: กรอบสีครีมสว่างตรงกลางจอ"""
+    x1, y1, x2, y2 = fr.box((420, 215, 800, 475))
+    sub = fr.img[max(0, y1):y2, max(0, x1):x2]
+    if sub.size == 0:
+        return False
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    return float(((hsv[..., 2] > 195) & (hsv[..., 1] < 45)).mean()) >= 0.55
 
 
 def bag_state(fr):
@@ -2104,7 +2176,7 @@ class RockLoop:
     def approach(self, rock):
         """เดินเข้าหาหิน: หินซ้าย/ขวา -> หมุนกล้อง, อยู่กลาง -> เดินตรง, ติดของขวาง -> เบี่ยง, ชิดแล้ว (หินใหญ่บังตัว/หายตอนชิด) -> ตี"""
         d, lost, last = self.dev, 0, rock["base"]
-        blocked = no_prog = 0
+        blocked = no_prog = stalls = 0
         last_dist = None
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
@@ -2145,8 +2217,8 @@ class RockLoop:
                 if abs(off) > band * ALIGN_OUT:
                     save_live(draw_track(fr, rocks, tgt, off, False, dist))
                     ui(f"🔴 หินอยู่{side} {abs(off):.0f}px → ล็อกแล้วหมุนกล้องให้ตรง")
-                    for _ in range(CAM_ALIGN_MAX):
-                        sh = self.cam.turn_by(-off * ALIGN_GAIN)
+                    for _ in range(CAM_ALIGN_MAX * 2):
+                        sh = self.cam.turn_by(max(-ALIGN_STEP_CAP, min(ALIGN_STEP_CAP, -off * ALIGN_GAIN)))
                         last = (last[0] + sh, last[1])               # หินเลื่อนตามฉาก คาดตำแหน่งใหม่ไว้ก่อน ไม่สลับก้อน
                         fr = self.frame()
                         rr, _ = find_rocks(fr, self.names, self.profiles)
@@ -2177,9 +2249,10 @@ class RockLoop:
             else:
                 no_prog = 0
             last_dist = dist
-            if not moved or no_prog >= 3:
+            stalls = 0 if moved else stalls + 1
+            if stalls >= STALL_NEED or no_prog >= 5:
                 blocked += 1
-                no_prog = 0
+                no_prog = stalls = 0
                 fr_n = self.sweep_near()
                 if fr_n is not None:
                     return self._arrived(fr_n)
@@ -2259,6 +2332,12 @@ class RockLoop:
                 nap(TIRED_REST_SEC)
                 continue
             bar = read_target_bar(fr)
+            if last_hp is not None and last_hp <= SINGLE_TAP_HP + 0.05 and find_hand(fr):
+                ui("🖐 เห็นรูปมือ = แร่แตกแล้ว หยุดตี")
+                return "empty"
+            if bar["engaged"] and last_hp is not None and bar["hp"] >= last_hp + JUMP_UP:
+                ui("⛏ เลือดพุ่งกลับ = ก้อนเดิมแตกแล้ว (ระบบล็อกก้อนใหม่) หยุดตี")
+                return "empty"
             if not bar["engaged"]:
                 if last_hp is not None and last_hp <= 0.20:
                     ui("⛏ แถบเป้าหาย (เลือดใกล้หมด) = หินแตกแล้ว")
@@ -2292,23 +2371,31 @@ class RockLoop:
                 if nudges > 3:
                     ui("⚠️ ตีแล้วเลือดไม่ลด")
                     return "stuck"
+                if pickaxe_state(fr) == "broken":
+                    self.repair_pickaxe()
+                    continue
                 ui("⛏ เลือดไม่ลด ขยับเข้าไปอีกนิด")
                 d.joystick(0, -1, 300)
-            d.burst(*fr.A("sword"), 1 if bar["hp"] <= 0.14 else BURST_TAPS)
+            d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
         ui("⚠️ ตีนานเกินกำหนด")
         return "timeout"
 
     def collect(self):
-        """เลือดหมดแล้ว: (รอ COLLECT_DELAY) กดปุ่มมือ -> รอ PICK_WAIT -> หา Pick All (เขียว/ขาว) -> กด
-        กดปุ่มมือทันทีโดยไม่เช็กรูปมือ เพราะรูปมือขึ้นเพราะดิน/ทราย/ดอกไม้ได้ด้วย"""
+        """เห็นรูปมือกดเลย (กดที่รูปมือ ถ้าไม่เห็นกดตำแหน่งปุ่มมือ) -> Pick All (เก็บทุกอย่าง) -> วนจนรูปมือหาย
+        เก็บแล้วหน้าต่าง Pick All ไม่ขึ้นก็ไม่เป็นไร: ถ้ารูปมือหายไปแล้วถือว่าเก็บเข้ากระเป๋าแล้ว"""
         d = self.dev
-        hand = self.fr.A("hand_guess")
         if COLLECT_DELAY > 0:
             nap(COLLECT_DELAY)
+        got = seen = False
         for k in range(PICK_TRIES):
-            d.tap(*hand)
+            fr = self.frame(fast=True)
+            h = find_hand(fr)
+            seen = seen or bool(h)
+            if k > 0 and seen and not h and find_pick_all(fr) is None:
+                break                                            # รูปมือหายแล้ว = ไม่มีของเหลือ
+            d.tap(*(h or fr.A("hand_guess")))
             if k == 0:
-                ui("🖐 กดปุ่มมือ")
+                ui("🖐 กดรูปมือ" if h else "🖐 กดปุ่มมือ (ไม่เห็นรูปมือ กดตำแหน่งปุ่ม)")
             nap(PICK_WAIT)
             fr = self.frame(fast=True)
             pa = find_pick_all(fr)
@@ -2316,17 +2403,58 @@ class RockLoop:
                 d.tap(*pa)
                 nap(AFTER_PICK_WAIT)
                 self.stats["เก็บ"] += 1
+                got = True
                 ui("🎒 เก็บของแล้ว (Pick All)")
-                if bag_state(self.frame(fast=True)) == "full":
+                fr = self.frame(fast=True)
+                if bag_state(fr) == "full":
                     raise Stop("กระเป๋าเต็ม")
+                if find_hand(fr) and k < PICK_TRIES - 1:
+                    continue                                     # ยังมีรูปมือ (ของกองอื่น) กดต่อ
                 return True
-        ui("⚠️ ไม่เจอ Pick All (เซฟภาพ debug/nopick.png)")
-        try:
-            os.makedirs(DEBUG_DIR, exist_ok=True)
-            cv2.imwrite(os.path.join(DEBUG_DIR, "nopick.png"), self.fr.img)
-        except Exception:
-            pass
-        return False
+        if not got:
+            fr = self.frame(fast=True)
+            if seen and find_hand(fr) is None:
+                ui("🎒 เก็บแล้ว (รูปมือหาย ไม่มีหน้าต่าง Pick All)")
+                self.stats["เก็บ"] += 1
+                return True
+            ui("⚠️ ไม่เจอ Pick All (เซฟภาพ debug/nopick.png)")
+            try:
+                os.makedirs(DEBUG_DIR, exist_ok=True)
+                cv2.imwrite(os.path.join(DEBUG_DIR, "nopick.png"), self.fr.img)
+            except Exception:
+                pass
+        return got
+
+    def repair_pickaxe(self):
+        """ขวานแดง: กดช่องขวาน -> รอหน้าต่างซ่อมขึ้น -> กด Fix -> รอ -> กด Equip Now (ตำแหน่งปุ่มเดียวกัน) -> ปิดถ้ายังค้าง"""
+        d = self.dev
+        for attempt in range(REPAIR_MAX_FAILS):
+            ui(f"🔧 ขวานแดง ซ่อม ({attempt + 1}/{REPAIR_MAX_FAILS})")
+            fr = self.frame(guard=False, fast=True)
+            d.tap(*fr.A("pickaxe_slot"))
+            for _ in range(6):                                   # รอหน้าต่างขึ้น
+                nap(REPAIR_WAIT / 2)
+                fr = self.frame(guard=False, fast=True)
+                if repair_dialog_open(fr):
+                    break
+            else:
+                ui("⚠️ หน้าต่างซ่อมไม่ขึ้น ลองใหม่")
+                continue
+            d.tap(*fr.A("repair_btn"))                           # Fix
+            nap(REPAIR_WAIT)
+            fr = self.frame(guard=False, fast=True)
+            if repair_dialog_open(fr):
+                d.tap(*fr.A("repair_btn"))                       # Equip Now
+                nap(REPAIR_WAIT)
+                fr = self.frame(guard=False, fast=True)
+            if repair_dialog_open(fr):
+                d.tap(*fr.A("repair_close"))                     # ยังค้างอยู่ ปิดหน้าต่าง
+                nap(REPAIR_WAIT)
+                fr = self.frame(guard=False, fast=True)
+            if pickaxe_state(fr) != "broken":
+                ui("🔧 ซ่อมขวานแล้ว")
+                return True
+        raise Stop("ซ่อมขวานไม่สำเร็จ (ไม้ไม่พอ?)")
 
     def leave(self, rock, why):
         """ไม่ใช่หิน/ตีไม่โดน: ถอยออกจากเป้า เบี่ยงข้าง และจำตำแหน่งไว้ ไม่กลับมาตีอีก"""
@@ -2338,6 +2466,8 @@ class RockLoop:
         self.black.append((rock["base"], time.time() + BLACKLIST_SEC))
 
     def mine_one(self):
+        if pickaxe_state(self.frame(guard=False, fast=True)) == "broken":
+            self.repair_pickaxe()
         for k in range(ROCK_TRIES_PER_ROUND):
             rock = self.find_target()
             if rock is None:
