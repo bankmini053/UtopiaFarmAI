@@ -122,7 +122,13 @@ NEAR_DIST = 105               # ระยะ (px อ้างอิง) เท�
 APPROACH_MAX_STEPS = 40
 ENGAGE_TRIES = 8              # ตีไม่โดนเป้ากี่ครั้ง (แต่ละครั้งขยับเข้าใกล้หินมากขึ้น) ก่อนยอมออก
 SEARCH_MAX_ROUNDS = 25
-AFTER_PICK_WAIT = 0.8
+AFTER_PICK_WAIT = 0.8         # รอหลังกด Pick All ก่อนทำอย่างอื่น
+COLLECT_DELAY = 0.0           # รอกี่วินาทีหลังเลือดหมดก่อนกดปุ่มมือครั้งแรก (ปรับด้วย run --collect-delay)
+PICK_WAIT = 0.4               # กดปุ่มมือแล้วรอกี่วินาทีก่อนเช็กว่าหน้าต่าง Pick All ขึ้นหรือยัง (run --pick-wait)
+PICK_TRIES = 8                # กดปุ่มมือ/หา Pick All ซ้ำกี่รอบ
+CAM_SCAN_SLICES = 6           # มองหาหิน: หมุนรอบตัวแบ่งกี่ช่วง (6 = ช่วงละ 60°) ซ้าย -> เช็กภาพ -> ซ้าย -> เช็กภาพ
+CAM_SCAN_SHIFT = 850          # ฉากต้องเลื่อนกี่ px ต่อ 1 ช่วง (ประมาณ 60°) ปรับด้วย run --scan-shift
+LOST_NEAR_PIX = 3500          # หินหายตอนเข้าใกล้: ต้องมีสีหินรอบตัวอย่างน้อยเท่านี้ถึงนับว่า 'หินบังกล้อง' (ไม่งั้น = เห็นผิด)
 BURST_TAPS = 3                # ตีรัว: แตะดาบกี่ครั้งต่อรอบก่อนอ่านเลือด (ขวานไม้ -6 ต่อครั้ง)
 BURST_GAP = 0.30              # เว้นระหว่างแตะ (วินาที)
 BURST_PRESS_MS = 140          # แตะแต่ละครั้งกดค้างกี่ ms
@@ -1091,7 +1097,36 @@ def name_verdict(text, period, strict=None):
     return "unknown"
 
 
+def find_pick_all_white(fr):
+    """ปุ่ม Pick All แบบขาว (หน้าต่างเก็บของเครื่องใหม่): ปุ่มสี่เหลี่ยมขาวคู่ข้างกัน Cancel(ซ้าย) | Pick All(ขวา) -> (x, y) ของ Pick All"""
+    x1, y1, x2, y2 = fr.box((300, 300, 920, 620))
+    sub = fr.img[y1:y2, x1:x2]
+    if sub.size == 0:
+        return None
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    m = ((hsv[..., 2] >= 205) & (hsv[..., 1] <= 45)).astype(np.uint8) * 255
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 5)))
+    n, _, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    boxes = []
+    for i in range(1, n):
+        x, y, w, h, a = [int(v) for v in st[i]]
+        rw, rh = w / fr.sx, h / fr.sy
+        if 120 <= rw <= 230 and 36 <= rh <= 72 and a / float(w * h) >= 0.72 and 2.0 <= w / float(h) <= 5.0:
+            boxes.append((x1 + x + w // 2, y1 + y + h // 2, w, h))
+    for bx in boxes:                                     # ต้องมีปุ่มคู่ซ้ายมือแนวเดียวกัน (Cancel)
+        for bl in boxes:
+            dx = (bx[0] - bl[0]) / fr.sx
+            if bl is not bx and 140 <= dx <= 290 and abs(bx[1] - bl[1]) <= 14 * fr.sy:
+                return bx[0], bx[1]
+    return None
+
+
 def find_pick_all(fr):
+    """เจอปุ่ม Pick All ได้ 2 แบบ: เขียว(+Cancel แดง) หรือขาว(+Cancel ขาว) -> (x, y)"""
+    return _find_pick_all_green(fr) or find_pick_all_white(fr)
+
+
+def _find_pick_all_green(fr):
     """ปุ่ม Pick All (เขียว) + ต้องมีปุ่ม Cancel สีแดงอยู่ซ้ายมือแนวเดียวกัน -> (x, y)"""
     p = find_button(fr, "green", "dialog", 3500)
     if not p:
@@ -1572,6 +1607,17 @@ class Camera:
             log("[กล้อง] ลากแล้วฉากไม่หมุน")
         return sh
 
+    def turn_left_blind(self, shift_px):
+        """หมุนกล้องไปทางซ้ายให้ฉากเลื่อนประมาณ shift_px โดยไม่วัดซ้ำ (เร็ว) ลากทีละไม่เกิน CAM_DRAG_PX*1.5"""
+        total = shift_px / abs(self.ratio)
+        chunk = CAM_DRAG_PX * 1.5
+        sgn = 1 if self.ratio > 0 else -1
+        while total > 1:
+            d = min(chunk, total)
+            self._drag_axis(sgn * d, self.axis)
+            total -= d
+            nap(0.15)
+
     def turn_by(self, shift_px):
         """หมุนให้ฉากขยับ shift_px (บวก = กล้องหันซ้าย / ลบ = หันขวา) -> ฉากขยับจริงกี่ px"""
         shift_px = max(-CAM_MAX_SHIFT, min(CAM_MAX_SHIFT, shift_px))
@@ -1695,6 +1741,11 @@ def log_time_row(row):
 # =============================================================================
 # ตัวบอทวน
 # =============================================================================
+def k_report(bot, rnd, rock):
+    bot.report_time(f"มองหาหิน รอบ{rnd + 1} {'เจอ' if rock else 'ไม่เจอ'}")
+    return rock is not None
+
+
 class RockLoop:
     def __init__(self, dev, profiles, period_override=None):
         self.dev, self.profiles = dev, profiles
@@ -1856,24 +1907,37 @@ class RockLoop:
         self.dev.joystick(math.sin(self.wander_ang), -math.cos(self.wander_ang), 800)
         nap(0.3)
 
+    def _rocks_now(self):
+        fr = self.frame()
+        rocks, _ = find_rocks(fr, self.names, self.profiles)
+        return [r for r in rocks if not self.blacklisted(r)]
+
+    def scan360(self):
+        """หมุนรอบตัวแบ่ง CAM_SCAN_SLICES ช่วง: เช็กภาพ -> หมุนซ้าย -> เช็กภาพ ... เจอหิน (ยืนยันซ้ำ 2 เฟรม) = คืนก้อนที่ใกล้สุด"""
+        n = CAM_SCAN_SLICES if self.cam.ok else 1
+        for k in range(n):
+            rocks = self._rocks_now()
+            if rocks:
+                again = self._rocks_now()                    # กันเห็นผิดเฟรมเดียว
+                hit = [r for r in again if math.hypot(r["base"][0] - rocks[0]["base"][0], r["base"][1] - rocks[0]["base"][1]) < 120]
+                if hit:
+                    ui(f"🪨 เจอหิน {len(again)} ก้อน (ช่วง {k + 1}/{n})")
+                    log(f"[หา] ใกล้สุดฐาน={hit[0]['base']}")
+                    return hit[0]
+                log("[หา] เห็นหินเฟรมเดียว ไม่ยืนยัน -> ข้าม")
+            if k < n - 1:
+                ui(f"🔄 ไม่เจอ หมุนซ้าย {k + 1}/{n}  (ช่วงละ {360 // n}°)")
+                self.cam.turn_left_blind(CAM_SCAN_SHIFT)
+                nap(0.3)
+        return None
+
     def find_target(self):
-        """ยืนมองจากจุดนี้: หมุนกล้องกวาดไปทางซ้ายหาหิน เจอแล้วคืนก้อนที่ใกล้สุด ไม่เจอเดินสุ่มสั้นๆ แล้วกวาดใหม่"""
+        """หมุนรอบตัว 360° (แบ่งเป็นช่วง) หาหิน เจอแล้วคืนก้อนที่ใกล้สุด ไม่เจอเดินสุ่มสั้นๆ แล้วหมุนหาใหม่"""
         for rnd in range(ROCKS_PER_VISIT):
-            steps = CAM_SWEEP_STEPS if self.cam.ok else 1
-            ui("🔎 กวาดหาหิน ←ซ้าย" if self.cam.ok else "🔎 มองหาหิน")
-            for k in range(steps):
-                fr = self.frame()
-                rocks, _ = find_rocks(fr, self.names, self.profiles)
-                rocks = [r for r in rocks if not self.blacklisted(r)]
-                if k == 0:
-                    self.report_time(f"มองหาหิน รอบ{rnd + 1} เจอ{len(rocks)}")
-                if rocks:
-                    ui(f"🪨 เจอหิน {len(rocks)} ก้อน")
-                    log(f"[หา] ใกล้สุดฐาน={rocks[0]['base']}")
-                    return rocks[0]
-                if self.cam.ok:
-                    log(f"[กล้อง] ไม่เจอหิน -> หมุนกล้องไปทางซ้าย ({k + 1}/{steps})")
-                    self.cam.sweep_left()
+            ui("🔎 หมุนมองหาหิน 360°" if self.cam.ok else "🔎 มองหาหิน")
+            rock = self.scan360()
+            if k_report(self, rnd, rock):
+                return rock
             ui(f"🔎 ไม่เจอ เดินสุ่ม ({rnd + 1}/{ROCKS_PER_VISIT})")
             self.explore()
             if self.search_pt and self.nav.last:      # กันเดินไกลจากจุดมองหาเกินไป
@@ -1929,7 +1993,7 @@ class RockLoop:
             tgt = (same or rocks or [None])[0]
             if tgt is None:
                 lost += 1
-                if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy:
+                if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy and self.near_pixels(fr) >= LOST_NEAR_PIX:
                     ui("📍 ชิดหินแล้ว (หินบังกล้อง)")
                     return self._arrived(fr)
                 if lost >= 3:
@@ -2057,14 +2121,17 @@ class RockLoop:
         return "timeout"
 
     def collect(self):
-        """เลือดหมดแล้ว: กดปุ่มมือทันที (ไม่รอตรวจรูปมือ เพราะรูปมือขึ้นเพราะดิน/ทราย/ดอกไม้ได้ด้วย) -> Pick All"""
+        """เลือดหมดแล้ว: (รอ COLLECT_DELAY) กดปุ่มมือ -> รอ PICK_WAIT -> หา Pick All (เขียว/ขาว) -> กด
+        กดปุ่มมือทันทีโดยไม่เช็กรูปมือ เพราะรูปมือขึ้นเพราะดิน/ทราย/ดอกไม้ได้ด้วย"""
         d = self.dev
         hand = self.fr.A("hand_guess")
-        for k in range(6):
+        if COLLECT_DELAY > 0:
+            nap(COLLECT_DELAY)
+        for k in range(PICK_TRIES):
             d.tap(*hand)
             if k == 0:
                 ui("🖐 กดปุ่มมือ")
-            nap(0.25)
+            nap(PICK_WAIT)
             fr = self.frame(fast=True)
             pa = find_pick_all(fr)
             if pa:
@@ -2075,7 +2142,12 @@ class RockLoop:
                 if bag_state(self.frame(fast=True)) == "full":
                     raise Stop("กระเป๋าเต็ม")
                 return True
-        ui("⚠️ ไม่เจอ Pick All")
+        ui("⚠️ ไม่เจอ Pick All (เซฟภาพ debug/nopick.png)")
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            cv2.imwrite(os.path.join(DEBUG_DIR, "nopick.png"), self.fr.img)
+        except Exception:
+            pass
         return False
 
     def leave(self, rock, why):
@@ -2328,6 +2400,9 @@ def main():
     r.add_argument("--period", choices=list(PERIODS), help="บังคับช่วงเวลา (ทดสอบ)")
     r.add_argument("--no-countdown", action="store_true")
     r.add_argument("--pos", nargs="+", help="พิกัดจริงตอนเริ่ม เช่น 6356,14178 (ใช้ซ่อมเลขที่ OCR อ่านเพี้ยน และจำไว้ใน pos_ref.json)")
+    r.add_argument("--collect-delay", type=float, help="รอกี่วินาทีหลังเลือดหมดก่อนกดปุ่มมือ (ค่าเริ่ม 0)")
+    r.add_argument("--pick-wait", type=float, help="กดปุ่มมือแล้วรอกี่วินาทีก่อนหา Pick All (ค่าเริ่ม 0.4)")
+    r.add_argument("--scan-shift", type=int, help="ฉากเลื่อนกี่ px ต่อช่วงหมุน 60° (ค่าเริ่ม 850 มากขึ้น=หมุนมากขึ้น)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
     r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
@@ -2351,9 +2426,15 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT, QUIET, GUARD, SEARCH_COORD
+    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT
     if getattr(args, "no_guard", False):
         GUARD = False
+    if getattr(args, "collect_delay", None) is not None:
+        COLLECT_DELAY = max(0.0, args.collect_delay)
+    if getattr(args, "pick_wait", None) is not None:
+        PICK_WAIT = max(0.05, args.pick_wait)
+    if getattr(args, "scan_shift", None):
+        CAM_SCAN_SHIFT = max(100, args.scan_shift)
     if args.cmd != "stop":                       # ไฟล์ STOP เก่าที่ค้างอยู่ ต้องไม่ทำให้รันรอบใหม่หยุดทันที
         try:
             os.remove(STOP_FILE)
