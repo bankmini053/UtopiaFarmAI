@@ -93,7 +93,7 @@ ROCK_V_FLOOR = 40
 # ช่วงเวลาในเกม (นาทีของวัน): เช้ามืด 05:20-06:20 / กลางวัน 06:20-19:50 / กลางคืน 19:50-05:20
 PERIODS = {"dawn": (5 * 60 + 20, 6 * 60 + 20), "day": (6 * 60 + 20, 19 * 60 + 50), "night": (19 * 60 + 50, 5 * 60 + 20)}
 TWILIGHT_BLEND_MIN = 40       # ใกล้รอยต่อ ±นาที ใช้โทนม่วง 'dawn' ร่วมด้วย (แสงเปลี่ยนไม่ตรงเวลาเป๊ะ)
-CLOCK_READ_INTERVAL = 15.0     # อ่านนาฬิกาทุกกี่วินาที
+CLOCK_READ_INTERVAL = 3.0     # อ่านนาฬิกาทุกกี่วินาที
 CLOCK_FALLBACK_VISUAL = True  # อ่านไม่ได้เลย -> เดาจากแสงของฉาก
 
 # ชื่อบนแถบเป้าหมาย: ต้องมีคำเหล่านี้ (ตัวพิมพ์เล็ก) จึงถือว่าเป็นแร่ / ชื่อที่ห้ามตี
@@ -128,6 +128,9 @@ PICK_WAIT = 0.4               # กดปุ่มมือแล้วรอก
 PICK_TRIES = 8                # กดปุ่มมือ/หา Pick All ซ้ำกี่รอบ
 CAM_SCAN_SLICES = 6           # มองหาหิน: หมุนรอบตัวแบ่งกี่ช่วง (6 = ช่วงละ 60°) ซ้าย -> เช็กภาพ -> ซ้าย -> เช็กภาพ
 CAM_SCAN_SHIFT = 850          # ฉากต้องเลื่อนกี่ px ต่อ 1 ช่วง (ประมาณ 60°) ปรับด้วย run --scan-shift
+NAME_TILT = True              # อ่านชื่อไม่ได้ -> ก้มกล้องลง 1 ระยะแล้วอ่านใหม่ แล้วเงยกลับที่เดิม
+NAME_TILT_PX = 140            # ระยะลากก้มกล้อง (px) ต่อ 1 ระยะ
+BAR_LOST_RETRY = 4            # แถบเป้าหายตอนเลือดยังเหลือเยอะ: ตีต่ออีกกี่ครั้งก่อนสรุปว่าหลุดเป้า
 LOST_NEAR_PIX = 3500          # หินหายตอนเข้าใกล้: ต้องมีสีหินรอบตัวอย่างน้อยเท่านี้ถึงนับว่า 'หินบังกล้อง' (ไม่งั้น = เห็นผิด)
 BURST_TAPS = 3                # ตีรัว: แตะดาบกี่ครั้งต่อรอบก่อนอ่านเลือด (ขวานไม้ -6 ต่อครั้ง)
 BURST_GAP = 0.30              # เว้นระหว่างแตะ (วินาที)
@@ -1607,6 +1610,32 @@ class Camera:
             log("[กล้อง] ลากแล้วฉากไม่หมุน")
         return sh
 
+    def tilt_down(self, px=NAME_TILT_PX):
+        """ก้มกล้องลง 1 ระยะ (ลากแกนตั้งฉากกับแกนหมุนซ้ายขวา) ทิศวัดเอง: ก้ม = ฉากเลื่อนขึ้น -> คืนระยะที่ลากจริง (มีเครื่องหมาย) หรือ 0 ถ้าทำไม่ได้"""
+        pa = "y" if self.axis == "x" else "x"
+        sign = getattr(self, "pitch_sign", None) or 1
+        for _ in range(2):
+            a = scene_gray(self._snap())
+            self._drag_axis(sign * px, pa)
+            nap(0.35)
+            _, dy, _ = scene_shift(a, scene_gray(self._snap()))
+            log(f"[กล้อง] ก้ม ลาก {sign * px:+d}px -> ฉากขยับแนวตั้ง {dy:+.0f}")
+            if dy < -CAM_MIN_SHIFT:
+                self.pitch_sign = sign
+                return sign * px
+            self._drag_axis(-sign * px, pa)               # ทิศผิด/ไม่ขยับ: ลากกลับแล้วลองทิศตรงข้าม
+            nap(0.3)
+            if abs(dy) < CAM_MIN_SHIFT:
+                return 0
+            sign = -sign
+        return 0
+
+    def tilt_restore(self, done):
+        """เงยกลับจุดเดิมหลัง tilt_down"""
+        if done:
+            self._drag_axis(-done, "y" if self.axis == "x" else "x")
+            nap(0.3)
+
     def turn_left_blind(self, shift_px):
         """หมุนกล้องไปทางซ้ายให้ฉากเลื่อนประมาณ shift_px โดยไม่วัดซ้ำ (เร็ว) ลากทีละไม่เกิน CAM_DRAG_PX*1.5"""
         total = shift_px / abs(self.ratio)
@@ -1774,6 +1803,9 @@ class RockLoop:
         if fast:
             return fr
         self.names, self.period, self._tstr, self._src = self.clock.current(fr)
+        if self.period != getattr(self, "_per_shown", None):
+            self._per_shown = self.period
+            ui(f"🕐 {self._tstr} → {PERIOD_TH[self.period]}")
         if guard and GUARD:
             self.guard(fr)
         return fr
@@ -2064,6 +2096,8 @@ class RockLoop:
             if bar["engaged"]:
                 name = read_target_name(fr, bar)
                 v = name_verdict(name, self.period)
+                if v == "unknown" and NAME_TILT and self.cam.ok:
+                    v, name = self.reread_name_tilted(name, v)
                 short = (name.split("|")[0].strip() or "?")[:14]
                 ui(f"⚔️ ตี: {short.title()} เลือด {bar['hp'] * 100:.0f}%")
                 log(f"[ตี] ชื่อที่อ่านได้ '{name}' -> {v}")
@@ -2085,10 +2119,35 @@ class RockLoop:
         ui("⚠️ ตีไม่โดนเป้า")
         return "miss"
 
+    def reread_name_tilted(self, name, v):
+        """อ่านชื่อไม่ออก: ก้มกล้องลง 1 ระยะ (พื้นหลังหลังแถบชื่อเปลี่ยนจากท้องฟ้าเป็นพื้นหญ้า) อ่านใหม่ แล้วเงยกลับที่เดิม"""
+        ui("🎥 อ่านชื่อไม่ออก → ก้มกล้องลงอ่านใหม่")
+        done = self.cam.tilt_down()
+        if not done:
+            ui("🎥 ก้มกล้องไม่ได้ ข้าม")
+            return v, name
+        try:
+            nap(0.3)
+            for _ in range(3):
+                fr = self.frame(fast=True)
+                bar = read_target_bar(fr)
+                if not bar["engaged"]:
+                    continue
+                n2 = read_target_name(fr, bar)
+                v2 = name_verdict(n2, self.period)
+                log(f"[ชื่อ] หลังก้มกล้อง '{n2}' -> {v2}")
+                if v2 != "unknown":
+                    ui("🎥 อ่านชื่อได้แล้ว")
+                    return v2, n2
+        finally:
+            self.cam.tilt_restore(done)
+            ui("🎥 เงยกล้องกลับที่เดิม")
+        return v, name
+
     def chop_until_empty(self):
         """ตีรัวจนเลือดเป้าหมดหมด -> 'empty' | 'gone' (แถบหาย) | 'stuck' (เลือดไม่ลด) | 'timeout'
         แตะดาบรัว BURST_TAPS ครั้งแล้วค่อยอ่านเลือด (ไม่ใช้นาฬิกา/ยามในลูปนี้ให้เร็ว) เหนื่อย = พักแล้วตีต่อ"""
-        d, t0, last_hp, stale, nudges = self.dev, time.time(), None, 0, 0
+        d, t0, last_hp, stale, nudges, lost = self.dev, time.time(), None, 0, 0, 0
         while time.time() - t0 < HIT_TIMEOUT:
             fr = self.frame(fast=True)
             if banner_present(fr):
@@ -2097,8 +2156,23 @@ class RockLoop:
                 continue
             bar = read_target_bar(fr)
             if not bar["engaged"]:
-                ui("⛏ แถบเป้าหายแล้ว")
-                return "gone"
+                if last_hp is not None and last_hp <= 0.20:
+                    ui("⛏ แถบเป้าหาย (เลือดใกล้หมด) = หินแตกแล้ว")
+                    return "gone"
+                lost += 1                                    # เลือดยังเหลือเยอะแต่แถบหาย: น่าจะอ่านพลาด ตีต่อก่อน
+                log(f"[ตี] แถบเป้าหายตอนเลือดเหลือ {0 if last_hp is None else last_hp * 100:.0f}% ({lost}/{BAR_LOST_RETRY})")
+                if lost >= BAR_LOST_RETRY:
+                    ui("⚠️ แถบเป้าหาย ทั้งที่เลือดยังเหลือ")
+                    return "lost"
+                d.burst(*fr.A("sword"), 1)
+                nap(0.2)
+                continue
+            lost = 0
+            if bar["hp"] <= 0.02 and (last_hp is None or last_hp > 0.25):
+                fr = self.frame(fast=True)                   # เลือดกระโดดจากเยอะเป็น 0 = อาจอ่านพลาด ดูซ้ำ
+                bar = read_target_bar(fr)
+                if not bar["engaged"]:
+                    continue
             if bar["hp"] <= 0.02:
                 ui("⛏ เลือดหมดแล้ว")
                 return "empty"
@@ -2403,6 +2477,7 @@ def main():
     r.add_argument("--collect-delay", type=float, help="รอกี่วินาทีหลังเลือดหมดก่อนกดปุ่มมือ (ค่าเริ่ม 0)")
     r.add_argument("--pick-wait", type=float, help="กดปุ่มมือแล้วรอกี่วินาทีก่อนหา Pick All (ค่าเริ่ม 0.4)")
     r.add_argument("--scan-shift", type=int, help="ฉากเลื่อนกี่ px ต่อช่วงหมุน 60° (ค่าเริ่ม 850 มากขึ้น=หมุนมากขึ้น)")
+    r.add_argument("--clock-interval", type=float, help="อ่านนาฬิกาในเกมทุกกี่วินาที (ค่าเริ่ม 3 น้อยลง=อ่านถี่ขึ้น แต่ช้าลง)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
     r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
@@ -2426,13 +2501,15 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT
+    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL
     if getattr(args, "no_guard", False):
         GUARD = False
     if getattr(args, "collect_delay", None) is not None:
         COLLECT_DELAY = max(0.0, args.collect_delay)
     if getattr(args, "pick_wait", None) is not None:
         PICK_WAIT = max(0.05, args.pick_wait)
+    if getattr(args, "clock_interval", None) is not None:
+        CLOCK_READ_INTERVAL = max(0.0, args.clock_interval)
     if getattr(args, "scan_shift", None):
         CAM_SCAN_SHIFT = max(100, args.scan_shift)
     if args.cmd != "stop":                       # ไฟล์ STOP เก่าที่ค้างอยู่ ต้องไม่ทำให้รันรอบใหม่หยุดทันที
