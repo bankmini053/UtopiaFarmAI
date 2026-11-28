@@ -28,6 +28,8 @@ import struct
 import time
 import shutil
 import tempfile
+import zlib
+import base64
 import traceback
 import subprocess
 import urllib.request
@@ -49,7 +51,7 @@ FORCE_DOWNLOAD = False        # True = โหลดใหม่ทุกคร�
 ICON_FILES = {}
 REQUIRED = ["cast", "reel"]
 HUNGER_NAMES = ("hunger_full", "hunger_yellow", "hunger_red")     # ไอคอนกระเพาะ 3 ระดับที่มีวงแหวน
-OPTIONAL = ["sword", "fix", "equip_no", "bait_slot", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
+OPTIONAL = ["sword", "fix", "equip_no", "bait_slot", "no_bait", "rod_green", "rod_red", "repair", "bait", "hunger_full", "hunger_yellow", "hunger_red", "hunger_danger"]
 # คำที่ใช้เดาชื่อไฟล์ ถ้าไม่ระบุใน ICON_FILES และไม่มีชื่อตรงตัว
 ALIASES = {
     "rod_green": ["rod_green"],
@@ -59,6 +61,7 @@ ALIASES = {
     "reel": ["reel", "bite", "glow", "hook"],
     "bait": [],
     "bait_slot": [],
+    "no_bait": ["no_bait"],
     "sword": ["sword", "ดาบ", "dagger", "attack"],
     "fix": ["fix"],
     "equip_no": ["equip_no", "equip"],
@@ -92,7 +95,7 @@ HIT_BUTTON = None             # พิกัดปุ่มกด เช่น (
 HIT_BUTTON_FRAC = (0.80, 0.75)  # สำรอง: ตำแหน่งปุ่มเป็นสัดส่วนจอ (ปุ่มคันเบ็ดขวา)
 
 # ---- ขั้นตอนอื่น ----
-REPAIR_DELAY = 2.0            # หน่วงระหว่างขั้นตอนซ่อมเบ็ด (กดเบ็ด -> Fix -> Equip No) วินาที
+REPAIR_DELAY = 2.2            # หน่วงระหว่างขั้นตอนซ่อมเบ็ด (กดเบ็ด -> Fix -> Equip No) วินาที
 REPAIR_WAIT = 6.0             # รอให้หน้าต่าง/ปุ่มขึ้นสูงสุดกี่วินาที
 MAX_REPAIR_FAIL = 3           # ซ่อมไม่สำเร็จติดกันกี่ครั้งให้หยุดบอท
 EAT_COOLDOWN = 2.5            # กดอาหารซ้ำห่างกันอย่างน้อยกี่วินาที
@@ -106,7 +109,17 @@ READ_COUNTS = True            # อ่านจำนวนเหยื่อ/�
 COUNT_INTERVAL = 8.0          # อ่านจำนวนบนแถบล่างทุกกี่วินาที (ไม่ให้หน่วงการตก)
 SLOT_R_FRAC = 0.049           # รัศมีช่องบนแถบล่างประมาณ 4.9% ของความสูงจอ
 BAIT_LOW = 20                 # เหยื่อเหลือน้อยกว่านี้ขึ้น ⚠
-FOOD_LOW = 10                 # อาหารเหลือน้อยกว่านี้ขึ้น ⚠
+FOOD_LOW = 3                  # อาหารเหลือน้อยกว่านี้ขึ้น ⚠
+STOP_ON_NO_BAIT = True        # ตกแล้วขึ้นข้อความ "กรุณาใส่ลูกธนูหรือเบ็ดก่อน" = เหยื่อหมด -> หยุดบอท
+NO_BAIT_WINDOW = 6.0          # หลังกดตก ตรวจข้อความเหยื่อหมดกี่วินาที
+RESPAWN_ON_DEATH = True        # ตายแล้วกดปุ่มแดง Respawn Now ก่อนหยุดบอท
+RESUME_WHEN_BAIT = True       # เหยื่อหมดแล้ว ถ้าอ่านเจอว่ามีเหยื่อกลับมา (>0) ให้ตกต่อ
+MINIGAME_MAX = 90             # มินิเกมเดียวนานเกินกี่วินาทีให้หยุด (กันค้าง)
+DEATH_CHECK_INTERVAL = 1.0    # ตรวจหน้าจอตายทุกกี่วินาที
+LOG_FILE = "boyfp.log"        # บันทึกเหตุการณ์ลงไฟล์ ไว้ย้อนดูว่าตายเพราะอะไร (ปิด = None)
+CAST_FAIL_MAX = 3             # กดตกแล้วแถบล่างไม่หาย (ตกไม่ติด) ติดกันกี่ครั้งให้หยุด (มักเพราะเหยื่อหมด)
+SAVE_COUNT_CROPS = True       # เซฟภาพตัวเลขที่บอทอ่านไว้ใน debug/ (ไว้ส่งให้ตรวจเวลาอ่านผิด)
+DEBUG_DIR = "debug"
 DEBUG = True
 DASHBOARD = True              # แสดงหน้าสถานะสวยๆ (ปิด = พิมพ์เป็นบรรทัดแบบเดิม)
 # ==========================================
@@ -128,6 +141,7 @@ class Status:
         self.hunger = "-"
         self.bait = self.food = self.wood = self.wood_need = None
         self.lat = None
+        self.no_bait = False
         self.events = deque(maxlen=3)
         self.last_draw = 0.0
         self.live = DASHBOARD and sys.stdout.isatty()
@@ -135,6 +149,12 @@ class Status:
     def event(self, text):
         ts = time.strftime("%H:%M:%S")
         self.events.append(f"{ts} {text}")
+        if LOG_FILE:
+            try:
+                with open(LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"{time.strftime('%Y-%m-%d')} {ts} {text}\n")
+            except OSError:
+                pass
         if self.live:
             self.draw()
         elif DEBUG:
@@ -154,6 +174,8 @@ class Status:
     def _stock(n, low):
         if n is None:
             return "-"
+        if n == 0:
+            return "0  ⚠ หมด!"
         return f"{n}" + ("  ⚠ เหลือน้อย" if n < low else "")
 
     def _wood(self):
@@ -177,7 +199,7 @@ class Status:
             f"🔄 ตก {self.casts} รอบ   ❌ พลาด {self.misses}",
             f"🥣 กระเพาะ: {self.hunger}",
             sep,
-            f"🪱 เหยื่อ {self._stock(self.bait, BAIT_LOW)}",
+            f"🪱 เหยื่อ {self._stock(self.bait, BAIT_LOW)}" + ("  (หมด หยุดตก)" if self.no_bait else ""),
             f"🍖 อาหาร {self._stock(self.food, FOOD_LOW)}  (กินไป {self.eats})",
             f"🪵 ไม้ {self._wood()}",
             f"🔧 ซ่อมเบ็ดแล้ว {self.repairs} ครั้ง",
@@ -354,6 +376,7 @@ ROI = {
     "rod_red": (0.0, 0.65, 1.0, 1.0),
     "bait": (0.30, 0.15, 1.0, 0.85),    # ข้อความเหยื่อ -1 ลอยขึ้นกลางจอ
     "bait_slot": (0.0, 0.70, 0.85, 1.0),  # ช่องเหยื่อบนแถบล่าง
+    "no_bait": (0.15, 0.22, 0.85, 0.58),  # แถบข้อความแจ้งเตือนกลางจอ
     "fix": (0.25, 0.45, 0.75, 1.0),     # ปุ่ม Fix ในหน้าต่างซ่อมของ
     "equip_no": (0.25, 0.45, 0.75, 1.0),
 }
@@ -374,6 +397,9 @@ def find(frame, icons, name):
     roi = frame[oy:int(y1 * H), ox:int(x1 * W)]
     roi = cv2.resize(roi, None, fx=DS, fy=DS, interpolation=cv2.INTER_AREA)
     tpl = icons[name]
+    if name.startswith("food:"):                      # ใช้เฉพาะตรงกลางไอคอนอาหาร (พื้นหลังช่อง/ตัวเลขไม่รบกวน)
+        th, tw = tpl.shape[:2]
+        tpl = tpl[int(th * 0.2):int(th * 0.8), int(tw * 0.2):int(tw * 0.8)]
     if name in HUNGER_NAMES and _hunger_w[0]:
         scales = [_hunger_w[0] / tpl.shape[1] * k for k in (0.92, 1.0, 1.08)]
     elif name in _scale_cache:
@@ -559,6 +585,29 @@ def hunger_level(frame, icons):
     return None
 
 
+def detect_death(frame):
+    """หน้าจอตาย: ปุ่มเขียว "Get Help" ซ้าย + ปุ่มชมพูแดง "Respawn Now" ขวา อยู่แถวล่างสุดคู่กัน
+    คืนจุดกึ่งกลางปุ่ม Respawn (x, y) หรือ None"""
+    H, W = frame.shape[:2]
+    y0 = int(0.86 * H)
+    hsv = cv2.cvtColor(frame[y0:, :], cv2.COLOR_BGR2HSV)
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    red = (((h_ <= 8) | (h_ >= 165)) & (s_ >= 70) & (s_ <= 210) & (v_ >= 150)).astype(np.uint8) * 255
+    grn = ((h_ >= 45) & (h_ <= 70) & (s_ >= 80) & (s_ <= 170) & (v_ >= 150)).astype(np.uint8) * 255
+
+    def boxes(mask):
+        n, _, st, _ = cv2.connectedComponentsWithStats(mask)
+        return [(x, y, w, h) for x, y, w, h, a in st[1:]
+                if 0.055 * W <= w <= 0.13 * W and 0.05 * H <= h <= 0.11 * H and a >= 0.55 * w * h]
+    reds, grns = boxes(red), boxes(grn)
+    for rx, ry, rw, rh in reds:
+        for gx, gy, gw, gh in grns:
+            if (abs(ry - gy) <= 0.02 * H and 0.75 <= rw / gw <= 1.33
+                    and 0.15 * W <= rx - (gx + gw) <= 0.50 * W):
+                return rx + rw / 2, y0 + ry + rh / 2
+    return None
+
+
 def detect_miss(frame):
     """แถบบนเส้นกลายเป็นสีแดง = กดพลาด คืน True/False"""
     H, W = frame.shape[:2]
@@ -579,87 +628,150 @@ TESS = shutil.which("tesseract")
 _ocr_warned = False
 
 
-def ocr_digits(bgr, whitelist="0123456789"):
-    """อ่านตัวเลขจากภาพเล็กๆ ด้วย tesseract (ติดตั้ง: pkg install tesseract) ไม่มี/อ่านไม่ได้ คืน ''"""
+def _tess(img, whitelist, psm=7):
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        cv2.imwrite(path, img)
+        out = subprocess.run([TESS, path, "stdout", "--psm", str(psm), "-c", f"tessedit_char_whitelist={whitelist}"],
+                             capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL).stdout
+    except Exception:
+        out = ""
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return "".join(ch for ch in out if ch in whitelist)
+
+
+def ocr_digits(bgr, whitelist="0123456789", votes=1, max_len=None):
+    """อ่านตัวเลขจากภาพเล็กๆ ด้วย tesseract (ติดตั้ง: pkg install tesseract)
+    votes=2: ต้องมีอย่างน้อย 2 วิธีประมวลผลภาพที่อ่านได้ตรงกัน (กันอ่านผิด 3/5/4)
+    max_len: ยาวเกินนี้ถือว่าอ่านผิด (จำนวนของมีแค่ 0-999 = 3 หลัก)  ไม่มี/อ่านไม่ได้ คืน ''"""
     global _ocr_warned
     if not TESS:
         if not _ocr_warned:
             _ocr_warned = True
             log("ยังไม่มี tesseract อ่านจำนวนที่เหลือไม่ได้ (pkg install tesseract)")
         return ""
-    for mode in (0, 1):
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        v = cv2.resize(hsv[..., 2], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-        if mode == 0:
-            t, _ = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            m = v > max(t, 140)
-        else:
-            sat = cv2.resize(hsv[..., 1], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-            m = (v > 190) & (sat < 90)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    v = cv2.resize(hsv[..., 2], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    sat = cv2.resize(hsv[..., 1], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    t_otsu, _ = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    masks = [
+        v > max(t_otsu, 140),                                  # ตัดสว่างด้วย Otsu
+        (v > 190) & (sat < 90),                                # ขาวสว่างชัด
+        v > max(float(np.percentile(v, 88)), 120),             # ส่วนที่สว่างที่สุด 12%
+    ]
+    results = []
+    for m in masks:
         img = cv2.copyMakeBorder(255 - m.astype(np.uint8) * 255, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255)
-        fd, path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        try:
-            cv2.imwrite(path, img)
-            out = subprocess.run([TESS, path, "stdout", "--psm", "7", "-c", f"tessedit_char_whitelist={whitelist}"],
-                                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL).stdout
-        except Exception:
-            out = ""
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        txt = "".join(ch for ch in out if ch in whitelist)
-        if txt:
-            return txt
-    return ""
+        txt = _tess(img, whitelist)
+        if txt and (max_len is None or len(txt) <= max_len):
+            results.append(txt)
+        if votes <= 1 and results:
+            return results[0]
+        if votes > 1 and len(results) >= 2 and results[-1] == results[-2]:
+            return results[-1]
+    if votes > 1:
+        for r in results:                                      # หาคู่ที่ตรงกันจากทุกวิธี
+            if results.count(r) >= 2:
+                return r
+        return ""                                              # ไม่ตรงกัน = ไม่แน่ใจ ไม่ใส่ค่า
+    return results[0] if results else ""
 
 
-def read_count_near(frame, mx, my, r):
-    """อ่านตัวเลขจำนวนบนป้ายมุมขวาบนของช่องที่เจอที่ (mx, my) รัศมีช่อง r คืน int หรือ None
-    หากลุ่มตัวเลขสีขาวตัวสูงราว 0.4r ใกล้ตำแหน่งที่ควรเป็น (ไม่พึ่งสีป้าย พื้นหลังมืดก็อ่านได้)"""
+def _digit_groups(hsv, thr, r, ex, ey):
+    """หากลุ่มตัวเลขสีขาวที่เรียงบรรทัดเดียวกัน ใกล้ (ex,ey) คืน (bbox, จำนวนก้อน) หรือ None"""
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    m = ((v_ > thr) & (s_ < 110)).astype(np.uint8) * 255
+    n, _, st, _ = cv2.connectedComponentsWithStats(m)
+    comps = [(x, y, w, h) for x, y, w, h, a in st[1:]
+             if 0.20 * r <= h <= 0.75 * r and 0.03 * r <= w <= 0.65 * r and a >= 5]
+    if not comps:
+        return None
+    best = None
+    for c in comps:
+        cy = c[1] + c[3] / 2
+        line = sorted([d for d in comps if abs((d[1] + d[3] / 2) - cy) <= 0.2 * r and abs(d[3] - c[3]) <= 0.35 * c[3] + 2],
+                      key=lambda d: d[0])
+        grp = [line[0]]
+        for d in line[1:]:                      # ต่อก้อนที่ห่างกันไม่เกิน 0.6r
+            if d[0] - (grp[-1][0] + grp[-1][2]) <= 0.6 * r:
+                grp.append(d)
+            elif d[0] > grp[-1][0]:
+                if d[0] - (grp[-1][0] + grp[-1][2]) > 0.6 * r and len(grp) and grp[-1][0] + grp[-1][2] < c[0]:
+                    grp = [d]
+        if c not in grp:
+            continue
+        gx0, gx1 = min(g[0] for g in grp), max(g[0] + g[2] for g in grp)
+        gy0, gy1 = min(g[1] for g in grp), max(g[1] + g[3] for g in grp)
+        dist = abs((gx0 + gx1) / 2 - ex) + abs((gy0 + gy1) / 2 - ey)
+        if dist > 1.1 * r:
+            continue
+        score = len(grp) * 0.3 * r - dist
+        if best is None or score > best[0]:
+            best = (score, (gx0, gy0, gx1, gy1), len(grp))
+    return None if best is None else (best[1], best[2])
+
+def _ocr_variants(crop):
+    """อ่านตัวเลขหลายแบบ (ขนาด/การตัดสว่างต่างกัน) คืนลิสต์ผล"""
+    g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    outs = []
+    for sc in (5, 7):
+        big = cv2.resize(g, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+        big = cv2.GaussianBlur(big, (0, 0), sc * 0.25)
+        t, _ = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        for thr in (t, max(t * 0.85, 110), min(t * 1.1, 235)):
+            m = (big > thr).astype(np.uint8) * 255
+            img = cv2.copyMakeBorder(255 - m, 24, 24, 24, 24, cv2.BORDER_CONSTANT, value=255)
+            for psm in (7, 8):
+                txt = _tess(img, "0123456789", psm=psm)
+                if txt:
+                    outs.append(txt)
+    return outs
+
+def _pick_count(outs, max_len=3):
+    """เลือกค่า: ตัดผลที่ยาวเกิน 3 หลัก แล้วให้คะแนนโหวต ผลที่ยาวกว่าและมีผลสั้นเป็นคำนำหน้า = ผลสั้นถูกตัดท้าย ให้ยกโหวตไปรวมกับผลยาว"""
+    outs = [o for o in outs if 0 < len(o) <= max_len]
+    if not outs:
+        return ""
+    votes = {}
+    for o in outs:
+        votes[o] = votes.get(o, 0) + 1
+    for o in list(votes):
+        for p in votes:
+            if len(p) > len(o) and p.startswith(o):      # o ถูกตัดท้าย
+                votes[p] += votes[o] * 0.5
+    return max(votes, key=lambda k: (votes[k], len(k)))
+
+def read_count_near(frame, mx, my, r, tag="x"):
     H, W = frame.shape[:2]
-    x0, x1 = max(0, int(mx - 0.2 * r)), min(W, int(mx + 1.7 * r))
-    y0, y1 = max(0, int(my - 1.5 * r)), min(H, int(my - 0.15 * r))
+    x0, x1 = max(0, int(mx - 0.2 * r)), min(W, int(mx + 2.0 * r))
+    y0, y1 = max(0, int(my - 1.55 * r)), min(H, int(my - 0.1 * r))
     roi = frame[y0:y1, x0:x1]
     if roi.size == 0:
         return None
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    white = ((hsv[..., 2] > 185) & (hsv[..., 1] < 90)).astype(np.uint8) * 255
-    n, _, st, _ = cv2.connectedComponentsWithStats(white)
-    comps = [(x, y, w, h) for x, y, w, h, a in st[1:]
-             if 0.25 * r <= h <= 0.65 * r and 0.05 * r <= w <= 0.55 * r and a >= 12]
-    if not comps:
-        return None
-    ex, ey = mx - x0 + 0.6 * r, my - y0 - 0.72 * r           # ตำแหน่งที่คาดว่าเป็นตัวเลข
-    best, best_score = None, -1e9
-    for c in comps:
-        cy = c[1] + c[3] / 2
-        line = [d for d in comps if abs((d[1] + d[3] / 2) - cy) <= 0.15 * r]
-        line.sort(key=lambda d: d[0])
-        grp = [c]                                            # ต่อตัวเลขที่อยู่ติดกันบนบรรทัดเดียวกัน
-        changed = True
-        while changed:
-            changed = False
-            for d in line:
-                if d in grp:
-                    continue
-                if any(abs(d[0] - (g[0] + g[2])) <= 0.45 * r or abs(g[0] - (d[0] + d[2])) <= 0.45 * r for g in grp):
-                    grp.append(d)
-                    changed = True
-        gx0, gx1 = min(g[0] for g in grp), max(g[0] + g[2] for g in grp)
-        gy0, gy1 = min(g[1] for g in grp), max(g[1] + g[3] for g in grp)
-        dist = abs((gx0 + gx1) / 2 - ex) + abs((gy0 + gy1) / 2 - ey)
-        score = len(grp) * 0.25 * r - dist
-        if score > best_score and dist <= 1.0 * r:
-            best, best_score = (gx0, gy0, gx1, gy1), score
+    ex, ey = mx - x0 + 0.62 * r, my - y0 - 0.78 * r
+    best = None
+    for thr in (185, 160, 140, 120):
+        g = _digit_groups(hsv, thr, r, ex, ey)
+        if g and (best is None or g[1] > best[1] or (g[1] == best[1] and (g[0][2]-g[0][0]) > (best[0][2]-best[0][0]))):
+            best = g
     if best is None:
         return None
-    gx0, gy0, gx1, gy1 = best
-    pad = max(3, int(0.12 * r))
-    crop = roi[max(0, gy0 - pad):gy1 + pad, max(0, gx0 - pad):gx1 + pad]
-    txt = ocr_digits(crop)
+    (gx0, gy0, gx1, gy1), nd = best
+    padx, pady = max(3, int(0.22 * r)), max(3, int(0.12 * r))
+    crop = roi[max(0, gy0 - pady):gy1 + pady, max(0, gx0 - padx):gx1 + padx]
+    txt = _pick_count(_ocr_variants(crop))
+    if SAVE_COUNT_CROPS and txt:
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            cv2.imwrite(os.path.join(DEBUG_DIR, f"count_{tag}_{txt}.png"), crop)
+        except Exception:
+            pass
     return int(txt) if txt.isdigit() else None
 
 
@@ -667,11 +779,28 @@ def read_wood(frame):
     """หน้าต่างซ่อมของ: อ่าน 'มี/ใช้' ใต้ไอคอนไม้ เช่น 1423/7  คืน (มี, ใช้) หรือ None"""
     H, W = frame.shape[:2]
     roi = frame[int(0.595 * H):int(0.675 * H), int(0.42 * W):int(0.58 * W)]
-    txt = ocr_digits(roi, "0123456789/")
+    txt = ocr_digits(roi, "0123456789/", votes=1)
     a, _, b = txt.partition("/")
     if a.isdigit() and b.isdigit() and len(b) <= 3:
         return int(a), int(b)
     return None
+
+
+_stock_pending = {}
+
+
+def accept_count(key, old, new):
+    """ตัวเลขที่เหลือเปลี่ยนช้าๆ: เปลี่ยนน้อยรับทันที ถ้ากระโดดไกลต้องอ่านได้ซ้ำสองครั้งถึงรับ"""
+    if old is not None and new < old and len(str(new)) < len(str(old)) and str(old).startswith(str(new)):
+        return old                                     # ตกหลักท้าย (169 -> 16) ไม่รับ
+    if old is None or abs(new - old) <= max(15, 0.1 * old):
+        _stock_pending.pop(key, None)
+        return new
+    if _stock_pending.get(key) == new:
+        _stock_pending.pop(key, None)
+        return new
+    _stock_pending[key] = new
+    return old
 
 
 def update_counts(frame, icons, foods, miss):
@@ -680,9 +809,9 @@ def update_counts(frame, icons, foods, miss):
     if "bait_slot" in icons:
         sc, mx, my = find(frame, icons, "bait_slot")
         if sc >= 0.70:
-            n = read_count_near(frame, mx, my, r)
+            n = read_count_near(frame, mx, my, r, "bait")
             if n is not None:
-                STATUS.bait = n
+                STATUS.bait = accept_count("bait", STATUS.bait, n)
                 miss["bait"] = 0
         else:
             miss["bait"] = miss.get("bait", 0) + 1
@@ -693,12 +822,12 @@ def update_counts(frame, icons, foods, miss):
         for name in foods:
             sc, mx, my = find(frame, icons, name)
             if sc >= FOOD_THRESHOLD:
-                n = read_count_near(frame, mx, my, r)
+                n = read_count_near(frame, mx, my, r, "food" + name[5:].split(".")[0])
                 if n is not None:
                     total += n
                     found = True
         if found:
-            STATUS.food = total
+            STATUS.food = accept_count("food", STATUS.food, total)
             miss["food"] = 0
         else:
             miss["food"] = miss.get("food", 0) + 1
@@ -711,6 +840,104 @@ def reflect(x, v, dt, lo, hi):
     L = hi - lo
     s_ = (x - lo + v * dt) % (2 * L)
     return lo + (s_ if s_ <= L else 2 * L - s_)
+
+
+
+_NO_BAIT_REF = np.frombuffer(zlib.decompress(base64.b64decode(
+    "eNq1lF9IU1Ecx7+ztbkxZK5ZY3JTG8zGkj2skXLJTRzdSNEebIXCfVhiMpqOESMtphc1U7sgYf5BLWxEKzNZoVgNpJcJSSIEPUT0EERPPUc99bt3bGosMMHD5Ry+v/M7n/s7v3POD8jZEvd82MdWvOkZ20+++u6FYWnkdruA11m2BLuLBfETUi/820Ef61mtzCqxYkKfFZFd8JNyb/q3Q8Pkjd9b/MDMKpMV27YCBw54nJRwz0ktCj1myaT0WGW+/aLnJjSeKjJVS7tpPmsmd2qKY1CWQH2ZhN1zRLIcPZgOJxuP3ZlJHJbr/UOY6024sGh+wFBKhJZXNuJbVgrfBDDv8kfhD4c7EBbHrhTFedp9X0zX8EzT0x/3cgv1KR0iyplbYC5huixch1k7xyPAu6OHQ224rmWxrkGitEvaVgJcACIdT2038RkbApyyge4qrSGzSC4FKZFk0xeT76tK0i4GEY5mhldR3mai03qEx1pMSfdCxEAUT4w8pgIE44MPgRU3K8iYUwNSfoS+EQ6uaP0S6obIfOZ4WAArSjOiqS2lamqnGEaMMp++8raS0DUugWgHCWspdfo0P5k+THlghbxYhm+ZUqxxWFb5N9FdQu61TjI6RLzUIOI9l9ABM0WBOfc2fuf91iQFT2K08W++7RPwXs0K/h81Mv/bIXZBKXDYYApSGMgn9+Y0v+KXgMiagvi6z8WiIOVng0nzu0O2ZPpn41aZb/4YzfDH14HFq+zP0zFR5i/dZhf8PIfn/TSb5rsNy3B8980PIiIgroHwuoDnIbLko34LXzPenafoZf6gQXEH+g+Ns1EHAvIzbQ0Bo96iIAYpfr0dXS2qmNGiQ6hVOm8ldY2TvS6YRDT2g7NISyhXholeeufBSnNPeyRPIjmkCRa2UFMV8rvhDWYurPmFMeczYua0O4qEdVhVs5eKY36au2Aapp3idl22yQh7Kmk1rtx218LEDt3RWf0/2D81c97C")), np.uint8).reshape(16, 96).astype(np.float32)
+
+
+def toast_text_mask(frame):
+    """ข้อความแจ้งเตือนกลางจอ (แถบดำโปร่งใสที่ราว 35-43% ของความสูง มีวงกลม "!" สีเหลืองนำหน้า)
+    คืน (มาสก์ตัวหนังสือ, bbox) หรือ None"""
+    H, W = frame.shape[:2]
+    y0, y1 = int(0.345 * H), int(0.435 * H)
+    band = frame[y0:y1]
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    yel = ((h_ >= 18) & (h_ <= 36) & (s_ >= 130) & (v_ >= 170)).astype(np.uint8) * 255
+    n, _, st, _ = cv2.connectedComponentsWithStats(yel)
+    icon = None
+    for x, y, w, h, a in st[1:]:
+        if 0.012 * H <= h <= 0.045 * H and h >= 1.6 * w and w >= 0.003 * H and a >= 15:
+            if icon is None or x < icon[0]:
+                icon = (x, y, w, h)
+    if icon is None:
+        return None
+    x_start = int(icon[0] + icon[2] + 0.02 * H)           # ข้ามวงแหวนรอบ "!" ไปที่ตัวหนังสือ
+    g = cv2.cvtColor(band[:, x_start:], cv2.COLOR_BGR2GRAY)
+    m = (g >= max(110, int(np.percentile(g, 93)))).astype(np.uint8) * 255
+    cols = np.nonzero(m.sum(axis=0) > 0)[0]
+    if len(cols) < 20:
+        return None
+    end = cols[0]
+    for c in cols[1:]:
+        if c - end > 0.04 * H:
+            break
+        end = c
+    ys, xs = np.nonzero(m[:, cols[0]:end + 1])
+    if len(ys) < 40:
+        return None
+    return m[ys.min():ys.max() + 1, cols[0]:end + 1]
+
+
+def detect_no_bait(frame):
+    """ขึ้นข้อความ "กรุณาใส่ลูกธนูหรือเบ็ดก่อน" = เหยื่อหมด (เทียบรูปร่างตัวหนังสือกับของจริง)"""
+    m = toast_text_mask(frame)
+    if m is None:
+        return False
+    a = cv2.resize(m, (96, 16), interpolation=cv2.INTER_AREA).astype(np.float32)
+    a -= a.mean()
+    b = _NO_BAIT_REF - _NO_BAIT_REF.mean()
+    d = np.linalg.norm(a) * np.linalg.norm(b)
+    return d > 0 and float((a * b).sum() / d) >= 0.80
+
+
+def detect_dead(frame):
+    """หน้าจอตาย: แถบล่างเป็นปุ่มเขียว Get Help + แถบเหลืองยาว (HP) + ปุ่มแดง Respawn Now
+    คืน (x, y) กึ่งกลางปุ่มแดง หรือ None"""
+    H, W = frame.shape[:2]
+    y0 = int(0.86 * H)
+    hsv = cv2.cvtColor(frame[y0:int(0.99 * H)], cv2.COLOR_BGR2HSV)
+    h_, s_, v_ = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    yel = (h_ >= 17) & (h_ <= 32) & (s_ >= 90) & (v_ >= 170)
+    if yel.sum(axis=1).max() < 0.2 * W:
+        return None
+    red = ((h_ <= 6) | (h_ >= 165)) & (s_ >= 70) & (v_ >= 150)
+    red[:, :int(0.55 * W)] = False
+    n, _, st, _ = cv2.connectedComponentsWithStats(red.astype(np.uint8) * 255)
+    best = None
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        if w >= 0.05 * W and h >= 0.04 * H and a >= 0.5 * w * h and (best is None or a > st[best][4]):
+            best = i
+    if best is None:
+        return None
+    x, y, w, h, a = st[best]
+    return x + w / 2, y0 + y + h / 2
+
+
+class CastGuard:
+    """กดตกแล้วแถบล่างต้องหาย ถ้าไม่หายแล้วแถบกลับมาเฉยๆ = ตกไม่ติด (เช่น เหยื่อหมด) นับติดกัน"""
+
+    def __init__(self):
+        self.ok = True
+        self.fail = 0
+
+    def on_cast(self):
+        self.ok = False
+
+    def saw_hidden(self):
+        self.ok = True
+        self.fail = 0
+
+    def failed(self):
+        """แถบกลับมาโดยไม่มีปลา: คืน True ถ้าตกไม่ติดครบกำหนด"""
+        if self.ok:
+            return False
+        self.fail += 1
+        STATUS.casts = max(0, STATUS.casts - 1)
+        return self.fail >= CAST_FAIL_MAX
 
 
 class Timing:
@@ -949,6 +1176,12 @@ def main():
     last_count_read = 0.0
     count_miss = {}
     lat_ema = None
+    last_death_check = 0.0
+    dead_hits = 0
+    guard = CastGuard()
+    mg_start = 0.0
+    no_bait_mode = False
+    last_bait_check = 0.0
 
     while True:
         t0 = time.time()
@@ -959,6 +1192,34 @@ def main():
         t = time.time()
         if not in_game:
             STATUS.tick()
+
+        # ===== เหยื่อหมด: หลังกดดาบขึ้นข้อความเตือน -> หยุดตก เฝ้าอาหารอย่างเดียว =====
+        if (STOP_ON_NO_BAIT and not no_bait_mode and not in_game and cast_time
+                and time.time() - cast_time < NO_BAIT_WINDOW and detect_no_bait(frame)):
+            no_bait_mode = True
+            STATUS.no_bait = True
+            STATUS.bait = 0
+            state = "IDLE"
+            guard.saw_hidden()
+            last_action = time.time()
+            log("เหยื่อหมด! หยุดตก เฝ้าอาหารอย่างเดียว")
+            continue
+
+        # ===== ตาย: หน้าจอ Get Help / Respawn Now -> กดเกิดใหม่แล้วหยุดคำสั่ง =====
+        if t - last_death_check >= DEATH_CHECK_INTERVAL:
+            last_death_check = t
+            dpos = detect_dead(frame)
+            if dpos:
+                dead_hits += 1
+                if dead_hits >= 2:
+                    log("ตายแล้ว! (หน้าจอ Respawn)")
+                    if RESPAWN_ON_DEATH:
+                        dev.tap(*dpos)
+                    STATUS.set("ตายแล้ว")
+                    STATUS.stop_reason = "ตายแล้ว"
+                    sys.exit(1)
+            else:
+                dead_hits = 0
 
         # ===== ทางด่วนรอปลากิน: ดูแค่วงแสงรอบปุ่ม (เร็วกว่าเทียบรูป) =====
         if state == "WAIT_BITE" and not in_game and time.time() - bite_tapped > 6.0:
@@ -975,8 +1236,11 @@ def main():
                     STATUS.set("ปลากิน! กดทันที")
                     log(f"ปลากิน (วงแสง {p:.0f} / ปกติ {base:.0f}) -> กดทันที")
                     dev.tap(btn[0], btn[1])
+                    if STATUS.bait:
+                        STATUS.bait -= 1                  # เหยื่อลด 1 ทุกครั้งที่ปลากิน
                     bite_tapped = last_action = time.time()
                     ring_hist = []
+                    guard.saw_hidden()
                     continue
                 now = time.time()
                 if now - cast_time > BITE_TIMEOUT:
@@ -997,6 +1261,10 @@ def main():
                                 log("แถบล่างกลับมาโดยไม่มีปลา -> ตกใหม่")
                                 state = "IDLE"
                                 green_while_wait = 0
+                                if guard.failed():
+                                    no_bait_mode = True
+                                    STATUS.no_bait = True
+                                    log(f"ตกไม่ติดต่อเนื่อง {CAST_FAIL_MAX} ครั้ง -> ถือว่าเหยื่อหมด หยุดตก")
                         else:
                             green_while_wait = 0
                 if state == "WAIT_BITE":
@@ -1009,6 +1277,8 @@ def main():
             if not in_game:
                 log("เข้ามินิเกม")
                 in_game = True
+                mg_start = t
+                guard.saw_hidden()
                 misses = 0
                 timing.reset()
                 H_, W_ = frame.shape[:2]
@@ -1049,20 +1319,40 @@ def main():
             continue
 
         if in_game:
-            # ไม่เห็นปลาแล้ว: รอดูตัวหนังสือสีเขียว "+1" = ได้ปลา แล้วค่อยนับ
+            if t - mg_start > MINIGAME_MAX:
+                STATUS.stop_reason = f"มินิเกมนานเกิน {MINIGAME_MAX} วิ (ค้าง?)"
+                log(STATUS.stop_reason)
+                sys.exit(1)
+            # แถบแดง = กดพลาด แต่ยังอยู่ในมินิเกม (ปลาไม่ถูกตัดทิ้ง)
+            if detect_miss(frame):
+                last_seen_game = t
+                missing = 0
+                if t - last_miss > MISS_COOLDOWN:
+                    last_miss = t
+                    misses += 1
+                    STATUS.misses += 1
+                    log(f"กดพลาด (แถบแดง) ครั้งที่ {misses}/{MAX_MISS}")
+                    if misses >= MAX_MISS:
+                        STATUS.set("หยุด: จับปลาไม่ได้")
+                        STATUS.stop_reason = f"จับปลาไม่ได้ (กดพลาด {misses} ครั้ง)"
+                        log(STATUS.stop_reason)
+                        sys.exit(1)
+                continue
+            # ไม่เห็นปลาแล้ว: รอดูตัวหนังสือสีเขียว "+1" = ได้ปลา
             missing += 1
             got = detect_catch_text(frame)
             if not got and (t - last_seen_game < MINIGAME_LOST_AFTER + CATCH_TEXT_WAIT or missing < 3):
                 continue
             in_game = False
             timing.reset()
-            if got:
+            # จบมินิเกมโดยพลาดไม่ถึงกำหนด = ได้ปลา (ถึงไม่เห็น +1 ก็นับ ไม่งั้นตัวที่เคยพลาดจะหาย)
+            if got or (misses < MAX_MISS and last_seen_game - mg_start >= 1.5):
                 STATUS.fish += 1
                 STATUS.set("ได้ปลาแล้ว -> รอแถบล่างกลับมา")
-                log(f"ได้ปลา +1 (พลาด {misses} ครั้ง)")
+                log(f"ได้ปลา +1 (พลาด {misses} ครั้ง)" + ("" if got else " [นับจากจบมินิเกม]"))
             else:
                 STATUS.set("ไม่ได้ปลา -> รอแถบล่างกลับมา")
-                log("จบมินิเกมแต่ไม่เห็น +1 (ไม่นับ)")
+                log("จบมินิเกมสั้นผิดปกติ (ไม่นับ)")
             STATUS.lat = None
             last_action = time.time()
             rod_seen = True       # หลังจบ แถบล่างจะกลับมา ห้ามเดาว่ากำลังตกอยู่
@@ -1081,6 +1371,9 @@ def main():
                 STATUS.set("ปลากิน! กดทันที")
                 log("ปลากิน (ปุ่มเรืองแสง) -> กด")
                 dev.tap(rx, ry)
+                guard.saw_hidden()
+                if STATUS.bait:
+                    STATUS.bait -= 1
                 last_action = time.time()
                 state = "WAIT_BITE"
                 cast_time = time.time()
@@ -1091,12 +1384,18 @@ def main():
 
         # ===== รอปลากิน (แถบล่างจะหายไปตอนตก) =====
         if state == "WAIT_BITE":
+            if rod is None:
+                guard.saw_hidden()
             if rod == "green" and time.time() - cast_time > 3:
                 green_while_wait += 1      # แถบกลับมาทั้งที่ยังไม่มีมินิเกม = ตกไม่ติด
                 if green_while_wait >= 3:
                     log("แถบล่างกลับมาโดยไม่มีปลา -> ตกใหม่")
                     state = "IDLE"
                     green_while_wait = 0
+                    if guard.failed():
+                        no_bait_mode = True
+                        STATUS.no_bait = True
+                        log(f"ตกไม่ติดต่อเนื่อง {CAST_FAIL_MAX} ครั้ง -> ถือว่าเหยื่อหมด หยุดตก")
             else:
                 green_while_wait = 0
             if state == "WAIT_BITE" and time.time() - cast_time > BITE_TIMEOUT:
@@ -1174,6 +1473,8 @@ def main():
                             STATUS.set(f"กินอาหารจนเต็ม (ครั้งที่ {hg.tries})")
                             log(f"กดอาหาร ({name[5:]}) ครั้งที่ {hg.tries}")
                             dev.tap(fx, fy)
+                            if STATUS.food:
+                                STATUS.food -= 1          # อาหารลด 1 ทุกครั้งที่กด
                             hg.last_eat = last_action = time.time()
                             tapped = True
                             break
@@ -1182,6 +1483,18 @@ def main():
                     log("ต้องกินแต่ไม่เจอไอคอนอาหารบนแถบล่าง -> ตกต่อ")
                     hg.eating = False
                     hg.missing_until = now + FOOD_MISSING_WAIT
+
+        # ===== โหมดเหยื่อหมด: ไม่ตก เฝ้าอาหาร/ตาย อ่านจำนวนเหยื่อดูว่ามีกลับมาไหม =====
+        if no_bait_mode:
+            if RESUME_WHEN_BAIT and STATUS.bait and STATUS.bait > 0 and rod == "green":
+                no_bait_mode = False
+                STATUS.no_bait = False
+                guard = CastGuard()
+                log(f"มีเหยื่อแล้ว ({STATUS.bait}) ตกต่อ")
+            else:
+                STATUS.set("เหยื่อหมด: เฝ้าอาหารอย่างเดียว")
+                time.sleep(0.4)
+                continue
 
         # ===== เบ็ดเขียว -> กดปุ่มดาบ -> ปุ่มเปลี่ยนเป็น cast.png และแถบล่างหาย = กำลังตก =====
         if rod == "green":
@@ -1197,6 +1510,7 @@ def main():
                 log("เบ็ดเขียว แต่ไม่เจอปุ่มดาบ/cast.png -> กดที่ช่องเบ็ดแทน")
                 tx, ty = rod_info[1], rod_info[2]
             dev.tap(tx, ty)
+            guard.on_cast()
             STATUS.casts += 1
             STATUS.set("รอปลากิน")
             last_action = time.time()
