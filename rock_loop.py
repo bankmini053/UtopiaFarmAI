@@ -98,6 +98,7 @@ CLOCK_FALLBACK_VISUAL = True  # อ่านไม่ได้เลย -> เ�
 
 # ชื่อบนแถบเป้าหมาย: ต้องมีคำเหล่านี้ (ตัวพิมพ์เล็ก) จึงถือว่าเป็นแร่ / ชื่อที่ห้ามตี
 ORE_NAME_KEYWORDS = {"dawn": ["mine", "iron", "ore"], "day": ["mine", "iron", "ore"], "night": ["mine", "iron", "ore"]}
+NAME_STRICT = True            # อ่านชื่อได้แต่ไม่ใช่แร่ (เช่น ต้นไม้/มอน) = ไม่ใช่หิน ให้ออกจากเป้า (อ่านไม่ออกเลย = ถือว่าตีได้)
 NAME_BLOCKLIST = ["cow", "chicken", "pig", "sheep", "goblin"]
 
 # การสั่งเครื่อง
@@ -121,6 +122,12 @@ ENGAGE_TRIES = 4
 SEARCH_MAX_ROUNDS = 25
 AFTER_PICK_WAIT = 1.5
 STUCK_FRAME_DIFF = 2.0
+NEAR_BOX = (430, 330, 790, 640)     # รอบตัวละคร: ถ้ามีสีหินเยอะ = หินอยู่ติดตัวแล้ว (หินใหญ่จนบังตัว/ถูกตัดทิ้ง)
+NEAR_PIX = 9000                     # พื้นที่สีหิน (px อ้างอิง) ในกรอบด้านบนที่ถือว่า 'ถึงหินแล้ว'
+LOST_NEAR_DIST = 330                # หินหายตอนห่างไม่เกินนี้ = เดินชนติดแล้ว (ไม่ใช่หลุดจอ) -> ตีเลย
+PROGRESS_MIN = 10                   # เดินแล้วระยะต้องลดอย่างน้อยกี่ px ไม่งั้นนับว่า 'ไม่คืบหน้า'
+UNSTICK_MAX = 4                     # ติดสิ่งกีดขวางกี่ครั้งติดกันแล้วยอมข้ามหินก้อนนี้
+PERIOD_TH = {"dawn": "เช้ามืด", "day": "กลางวัน", "night": "กลางคืน"}
 BLACKLIST_SEC = 90
 BAG_FULL_RATIO = 0.25         # สัดส่วนสีเหลือง/ส้ม/แดงในวงแหวนกระเป๋าที่ถือว่า 'เต็ม'
 REPAIR_MAX_FAILS = 3
@@ -141,7 +148,7 @@ CAM_SCENE_ROI = (250, 70, 1000, 290)     # ส่วนฉากไกล (ท�
 LAYOUT = "auto"
 LAYOUT_ROI = {
     "A": {"clock": (0, 4, 64, 32), "coords": (40, 246, 290, 276)},
-    "B": {"clock": (835, 2, 975, 44), "coords": (955, 118, 1150, 160)},
+    "B": {"clock": (888, 3, 958, 25), "coords": (1072, 130, 1205, 160)},
 }
 
 # โปรไฟล์สีหินสำรอง (ถ้าไม่มีโฟลเดอร์ templates/rocks จะใช้ชุดนี้)
@@ -166,10 +173,50 @@ class Stop(BaseException):      # ไม่ใช่ Exception: กัน except
     pass
 
 
+QUIET = False                          # True ตอน run: log() ลงไฟล์อย่างเดียว หน้าจอแสดงเฉพาะ ui() (สั้น อ่านง่าย)
+BOT_LOG = os.path.join(DEBUG_DIR, "bot.log")
+
+
+def _dw(t):
+    import unicodedata
+    return sum(0 if unicodedata.category(c) in ("Mn", "Me", "Cf") else (2 if unicodedata.east_asian_width(c) in ("W", "F") else 1)
+               for c in t)
+
+
+def _fit(t, cols):
+    out, w = "", 0
+    for c in t:
+        cw = _dw(c)
+        if w + cw > cols - 1:
+            return out.rstrip() + "…"
+        out, w = out + c, w + cw
+    return out
+
+
+def _to_file(prefix, text):
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        with open(BOT_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {prefix}{text}\n")
+    except Exception:
+        pass
+
+
 def log(msg):
-    """พิมพ์ชิดซ้ายทุกบรรทัด (ใส่ \\r กันบรรทัดเลื่อนขวาเมื่อ tty เพี้ยน)"""
+    """รายละเอียดเต็ม: ลงไฟล์ debug/bot.log เสมอ  หน้าจอแสดงเมื่อไม่ได้อยู่โหมด run (คำสั่ง doctor/test-input ฯลฯ)"""
     text = str(msg).lstrip(" ")
-    sys.stdout.write(f"\r{time.strftime('%H:%M:%S')}  {text}\n")
+    _to_file("", text)
+    if not QUIET:
+        sys.stdout.write(f"\r{time.strftime('%H:%M:%S')}  {text}\n")
+        sys.stdout.flush()
+
+
+def ui(msg):
+    """บรรทัดสั้นๆ สำหรับหน้าจอ (ชิดซ้าย ตัดให้พอดีความกว้างจอ ไม่มีเวลา) + เก็บลงไฟล์ด้วย"""
+    text = str(msg).strip()
+    _to_file("▸ ", text)
+    cols = shutil.get_terminal_size((40, 20)).columns
+    sys.stdout.write("\r" + _fit(text, cols) + "\n")
     sys.stdout.flush()
 
 
@@ -213,7 +260,7 @@ def install_stop_handlers():
         if hits["n"] >= 2:
             sys.stdout.write("\r\nบังคับออก\r\n")
             os._exit(130)
-        log("[หยุด] รับคำสั่งหยุดแล้ว กำลังหยุดทันที... (กด Ctrl+C อีกครั้งเพื่อบังคับออก)")
+        ui("⏹ หยุดแล้ว (กด Ctrl+C อีกครั้ง=บังคับ)")
 
     for sg in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -231,12 +278,13 @@ def install_stop_handlers():
                 return
             if line.strip().lower() in STOP_WORDS:
                 STOP_FLAG.set()
-                log("[หยุด] ได้รับ q -> หยุด")
+                ui("⏹ รับ q -> หยุด")
                 return
 
     if sys.stdin is not None and sys.stdin.isatty():
         threading.Thread(target=reader, daemon=True).start()
-    log("หยุดได้ทุกเมื่อ: กด Ctrl+C  |  พิมพ์ q แล้ว Enter  |  หรือเปิดอีกหน้าต่างพิมพ์ python rock_loop.py stop")
+    ui("⏹ หยุดได้: Ctrl+C / พิมพ์ q+Enter")
+    ui("   หรือหน้าต่างอื่น: python rock_loop.py stop")
 
 
 # =============================================================================
@@ -606,6 +654,8 @@ def read_digits_by_glyph(roi, kernels=(15, 17, 21)):
     for ks in kernels:
         m = tophat_mask(roi, 4, ks)
         gl = segment_glyphs(m)
+        if len(gl) > 9:
+            gl = gl[-9:]                  # เลย์เอาต์ B มีไอคอน/เลขเกาะนำหน้า เอา 9 ตัวท้าย
         if len(gl) != 9:
             continue
         if votes is None:
@@ -623,7 +673,8 @@ def read_digits_by_glyph(roi, kernels=(15, 17, 21)):
     k = boxes_ref
     if not (3 <= k <= 5):
         k = 4
-    return int(d[:k]), int(d[k:])
+    xy = int(d[:k]), int(d[k:])
+    return xy if (xy[0] >= 1000 and xy[1] >= 1000) else None      # พิกัดจริงของแผนที่นี้เป็นเลข 4-5 หลักทั้งคู่ (กันอ่านผิดโซน)
 
 
 class ClockReader:
@@ -775,6 +826,50 @@ def find_button(fr, kind, roi, min_area_ref, min_aspect=1.8, max_aspect=6.0):
     return (x1 + b[0], y1 + b[1]) if b else None
 
 
+def _runs_longest(m):
+    """ช่วง True ต่อเนื่องยาวสุดของเวกเตอร์ -> (ความยาว, เริ่ม, จบ)"""
+    best, i, n = (0, 0, 0), 0, len(m)
+    while i < n:
+        if m[i]:
+            j = i
+            while j + 1 < n and m[j + 1]:
+                j += 1
+            if j - i + 1 > best[0]:
+                best = (j - i + 1, i, j)
+            i = j + 1
+        else:
+            i += 1
+    return best
+
+
+def _white_line_bar(fr, strip, x1, y1, out):
+    """แถบเป้าหมายแบบเส้นขาว (เครื่องจริง): ชื่อ -> เส้นขาวบางยาว ~310px -> แถบเลือดแดงใต้เส้น"""
+    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+    S, V, H = hsv[..., 1], hsv[..., 2], hsv[..., 0]
+    white = (S < 60) & (V > 200)
+    red = (((H <= 9) | (H >= 171)) & (S > 110) & (V > 130))
+    rows = [(_runs_longest(white[y]), y) for y in range(white.shape[0])]
+    lo, hi = 230 * fr.sx, 380 * fr.sx
+    good = [(r, y) for r, y in rows if lo <= r[0] <= hi]
+    if not good:
+        return out
+    (n, xa, xb), ly = max(good, key=lambda t: t[0][0])
+    thick = sum(1 for r, y in good if abs(y - ly) <= 8)
+    if thick > 8:                                       # หนาเกิน = เมฆ/ขอบอย่างอื่น ไม่ใช่เส้นแถบ
+        return out
+    ya, yb = ly + int(3 * fr.sy), min(strip.shape[0], ly + int(22 * fr.sy))
+    if yb <= ya:
+        return out
+    below_red = red[ya:yb, xa:xb + 1]
+    cols = np.where(below_red.sum(axis=0) >= max(2, int(3 * fr.sy)))[0]
+    dark = float((V[ya:yb, xa:xb + 1].mean(axis=0) < 140).mean())
+    if cols.size == 0 and dark < 0.7:
+        return out
+    hp = (float(cols.max()) + 1.0) / float(xb - xa + 1) if cols.size else 0.0
+    out.update(engaged=True, hp=0.0 if hp < 0.03 else min(1.0, hp), x0=x1 + xa, x1=x1 + xb, y=y1 + ly)
+    return out
+
+
 def read_target_bar(fr):
     """-> dict(engaged, hp, x0, x1, y)  engaged = แถบเป้าหมายขึ้น (ตีโดนแล้ว), hp = เลือดที่เหลือ 0..1 (0 = หมด)
     หาแถบจากเส้นสีฟ้ายาวๆ ใต้ชื่อ (ชิ้นส่วนที่ต่อเนื่องยาวสุด) แล้ววัดความยาวสีแดงเหนือเส้น"""
@@ -788,7 +883,7 @@ def read_target_bar(fr):
     rows = cy.sum(axis=1)
     cand = np.where(rows >= 120 * fr.sx)[0]
     if cand.size == 0:
-        return out
+        return _white_line_bar(fr, strip, x1, y1, out)
     ly = int(cand[np.argmax(rows[cand])])
     line = cy[max(0, ly - 1):ly + 2].any(axis=0)
     best, i = (0, 0), 0                                   # ช่วงต่อเนื่องยาวสุด (ยอมขาดได้ 3px)
@@ -816,33 +911,94 @@ def read_target_bar(fr):
     return out
 
 
+NAME_TPL_B64 = {"iron mine": [
+    "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",
+]}   # ต้นแบบตัวหนังสือชื่อ (ฝังในไฟล์ ไม่ต้องมีโฟลเดอร์ templates)
+
+
+_NAME_TPL = {}
+
+
+def _dog(img):
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    return cv2.GaussianBlur(g, (0, 0), 0.8) - cv2.GaussianBlur(g, (0, 0), 3.0)
+
+
+def name_templates():
+    """ภาพต้นแบบตัวหนังสือชื่อเป้าหมาย templates/ui/name_<ชื่อ>_<n>.png (ชื่อขึ้นต้น bad- = ห้ามตี) -> {ชื่อ: [dog]}"""
+    if not _NAME_TPL:
+        import base64
+        for label, lst in NAME_TPL_B64.items():                  # ต้นแบบที่ฝังในไฟล์
+            for b64 in lst:
+                im = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+                t = _dog(im)
+                _NAME_TPL.setdefault(label, []).append((t - t.mean()) / (t.std() + 1e-6))
+        files = glob.glob(os.path.join(TEMPLATE_DIR, "ui", "name_*.png")) + glob.glob(os.path.join(ICONS_DIR, "name_*.png"))
+        for f in sorted(files):                                  # เพิ่มเองได้: name_<ชื่อ>_<n>.png (ชื่อขึ้นต้น bad- = ห้ามตี)
+            im = cv2.imread(f)
+            if im is None:
+                continue
+            label = os.path.basename(f)[5:-4].rsplit("_", 1)[0].replace("_", " ").replace("bad-", "bad ")
+            t = _dog(im)
+            _NAME_TPL.setdefault(label, []).append((t - t.mean()) / (t.std() + 1e-6))
+    return _NAME_TPL
+
+
+def name_by_template(fr, bar, thr=0.5):
+    """จับคู่ภาพตัวหนังสือชื่อกับต้นแบบ (ทนพื้นหลังท้องฟ้า/หญ้า) -> (ชื่อ, คะแนน) หรือ ('', 0)"""
+    tpls = name_templates()
+    if not tpls or not bar["engaged"]:
+        return "", 0.0
+    ya, yb = max(0, bar["y"] - int(40 * fr.sy)), min(fr.h, bar["y"] + int(4 * fr.sy))
+    xa, xb = max(0, bar["x0"] - int(10 * fr.sx)), min(fr.w, bar["x1"] + int(10 * fr.sx))
+    band = _dog(fr.img[ya:yb, xa:xb])
+    best = ("", 0.0)
+    for label, ts in tpls.items():
+        for t in ts:
+            for sc in (0.9, 1.0, 1.1):
+                tt = cv2.resize(t, None, fx=sc * fr.sx, fy=sc * fr.sy, interpolation=cv2.INTER_AREA)
+                if tt.shape[0] > band.shape[0] or tt.shape[1] > band.shape[1]:
+                    continue
+                v = float(cv2.matchTemplate(band, tt.astype(np.float32), cv2.TM_CCOEFF_NORMED).max())
+                if v > best[1]:
+                    best = (label, v)
+    return (best[0], best[1]) if best[1] >= thr else ("", best[1])
+
+
 def read_target_name(fr, bar):
-    """อ่านชื่อเป้าหมายบนแถบ (ตัวพิมพ์เล็ก) ต้องมี pytesseract"""
-    if not bar["engaged"] or not HAS_TESS:
+    """อ่านชื่อเป้าหมายบนแถบ (ตัวพิมพ์เล็ก): จับคู่ภาพต้นแบบก่อน (แม่นกว่า) แล้ว OCR เสริม"""
+    if not bar["engaged"]:
         return ""
-    ya, yb = max(0, bar["y"] - int(58 * fr.sy)), max(1, bar["y"] - int(6 * fr.sy))
-    w = bar["x1"] - bar["x0"]
-    roi = fr.img[ya:yb, bar["x0"] + int(w * 0.18):bar["x1"] - int(w * 0.18)]
-    if roi.size == 0:
-        return ""
-    g = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
     texts = []
-    imgs = []
-    for inv in (False, True):
-        _, t = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        imgs.append(255 - t if inv else t)
-    for ks in (17, 25):                                   # ตัวหนังสือขาวบนแถบ: top-hat ทนพื้นหลังทุกแบบ
-        imgs.append(255 - tophat_mask(roi, 3, ks, True))
-    for t in imgs:
-        t = cv2.copyMakeBorder(t, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
-        try:
-            texts.append(pytesseract.image_to_string(t, config="--psm 7").strip().lower())
-        except Exception:
-            pass
+    lab, sc = name_by_template(fr, bar)
+    if lab:
+        texts.append(lab)
+    if HAS_TESS:
+        ya, yb = max(0, bar["y"] - int(40 * fr.sy)), max(1, bar["y"] - int(1 * fr.sy))
+        w = bar["x1"] - bar["x0"]
+        roi = fr.img[ya:yb, bar["x0"] + int(w * 0.18):bar["x1"] - int(w * 0.18)]
+        if roi.size:
+            g = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+            imgs = []
+            _, o = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            imgs += [o, 255 - o]
+            bg = cv2.GaussianBlur(g, (0, 0), 25)
+            d = cv2.normalize(cv2.subtract(g, bg), None, 0, 255, cv2.NORM_MINMAX)
+            imgs.append(255 - cv2.threshold(d, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1])
+            imgs.append(255 - cv2.createCLAHE(3.0, (2, 2)).apply(g))
+            for ks in (13, 17):
+                imgs.append(255 - tophat_mask(roi, 4, ks, True))
+            for t in imgs:
+                t = cv2.copyMakeBorder(t, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+                try:
+                    texts.append(pytesseract.image_to_string(t, config="--psm 7").strip().lower())
+                except Exception:
+                    pass
     return " | ".join(x for x in texts if x)
 
 
-def name_verdict(text, period):
+def name_verdict(text, period, strict=None):
     """-> 'ore' | 'bad' | 'unknown' ตาม ORE_NAME_KEYWORDS / NAME_BLOCKLIST (เทียบแบบเผื่อ OCR เพี้ยน)"""
     if not text:
         return "unknown"
@@ -852,6 +1008,8 @@ def name_verdict(text, period):
         return "bad"
     if any(close(k, 0.7) for k in ORE_NAME_KEYWORDS.get(period, [])):
         return "ore"
+    if (NAME_STRICT if strict is None else strict) and any(sum(ch.isalpha() for ch in seg) >= 4 for seg in text.split("|")):
+        return "bad"                                    # อ่านชื่อออกเป็นตัวหนังสือ แต่ไม่ใช่แร่ = ไม่ใช่หิน
     return "unknown"
 
 
@@ -1093,7 +1251,7 @@ def _parse_coord(text):
     m = re.findall(r"\d+", text)
     if len(m) >= 3:
         m = m[-2:]                      # เลย์เอาต์ B มีเลขเกาะ/โซนนำหน้า เอาสองกลุ่มท้าย
-    if len(m) >= 2 and 3 <= len(m[0]) <= 5 and 4 <= len(m[1]) <= 6:
+    if len(m) >= 2 and 4 <= len(m[0]) <= 5 and 4 <= len(m[1]) <= 6:
         return int(m[0]), int(m[1])
     d = "".join(m)
     if len(m) == 1 and len(d) == 9:
@@ -1136,18 +1294,21 @@ def scene_gray(fr):
 
 
 def scene_shift(a, b):
-    """ฉากใน b ขยับไปทางขวากี่ px เทียบกับ a (บวก = เนื้อฉากเลื่อนขวา = กล้องหันซ้าย) -> (shift, ความมั่นใจ)"""
+    """ฉากใน b ขยับเทียบกับ a -> (dx, dy, ความมั่นใจ)  dx บวก = เนื้อฉากเลื่อนขวา = กล้องหันซ้าย / dy = เงย-ก้ม"""
     win = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
-    (dx, _), resp = cv2.phaseCorrelate(a, b, win)
-    return float(dx), float(resp)
+    (dx, dy), resp = cv2.phaseCorrelate(a, b, win)
+    return float(dx), float(dy), float(resp)
 
 
 class Camera:
-    """ratio = ฉากขยับกี่ px ต่อการลากนิ้ว 1 px (มีเครื่องหมาย วัดจริง ไม่ต้องเดาทิศ)"""
+    """ratio = ฉากขยับแนวนอนกี่ px ต่อการลากนิ้ว 1 px (มีเครื่องหมาย วัดจริง)
+    axis = ลากแนวไหนของจอแนวนอนแล้วกล้อง 'หมุนซ้าย-ขวา' ("x" ลากซ้าย-ขวา / "y" ลากขึ้น-ลง) วัดเอง
+    (บางเครื่องลากแนวนอนแล้วกล้องเงย-ก้มแทน จึงต้องลองทั้งสองแกน)"""
 
     def __init__(self, dev):
         self.dev = dev
         self.ratio = None
+        self.axis = "x"
         self.ok = False
 
     def _snap(self):
@@ -1156,32 +1317,41 @@ class Camera:
             raise Stop("จับภาพหน้าจอไม่ได้ (เช็คสิทธิ์รูท / su)")
         return fr
 
-    def drag(self, dx):
-        """ลากกล้อง dx px (ภาพแนวนอน) -> ฉากขยับกี่ px (วัดจริง)"""
+    def _drag_axis(self, d, axis):
+        if axis == "x":
+            self.dev.camera_drag(d, 0, CAM_DRAG_MS)
+        else:
+            self.dev.camera_drag(0, d, CAM_DRAG_MS)
+
+    def drag(self, d, axis=None):
+        """ลากกล้อง d px ตามแกน -> (ฉากขยับแนวนอน px, แนวตั้ง px)"""
         a = scene_gray(self._snap())
-        self.dev.camera_drag(dx, 0, CAM_DRAG_MS)
+        self._drag_axis(d, axis or self.axis)
         nap(0.35)
-        sh, resp = scene_shift(a, scene_gray(self._snap()))
-        return sh, resp
+        dx, dy, _ = scene_shift(a, scene_gray(self._snap()))
+        return dx, dy
 
     def try_calibrate(self, verbose=True):
-        """ลากซ้าย-ขวาเล็กๆ วัดว่าฉากขยับไหม ทิศไหน -> True เมื่อใช้งานได้"""
-        rs = []
-        for d in (-140, 140, -140):
-            sh, resp = self.drag(d)
-            if verbose:
-                log(f"[กล้อง] ลาก {d:+d}px -> ฉากขยับ {sh:+.1f}px (ความมั่นใจ {resp:.2f})")
-            if abs(sh) >= CAM_MIN_SHIFT:
-                rs.append(sh / d)
-        pos, neg = [r for r in rs if r > 0], [r for r in rs if r < 0]
-        if len(rs) >= 2 and (not pos or not neg):
-            self.ratio = float(np.median(rs))
-            self.ok = True
-            return True
+        """ลองลากสองแกน (ซ้าย-ขวา แล้วขึ้น-ลง) หาแกนที่ทำให้ฉากเลื่อนแนวนอน (= หมุนกล้อง)"""
+        for axis in ("x", "y"):
+            rs, pitch = [], 0.0
+            for d in (-140, 140, -140, 140):
+                dx, dy = self.drag(d, axis)
+                pitch = max(pitch, abs(dy))
+                if verbose:
+                    log(f"[กล้อง] ลาก{'ซ้าย-ขวา' if axis == 'x' else 'ขึ้น-ลง'} {d:+d}px -> ฉากขยับ แนวนอน {dx:+.0f} แนวตั้ง {dy:+.0f}")
+                if abs(dx) >= CAM_MIN_SHIFT and abs(dx) >= 1.5 * abs(dy):
+                    rs.append(dx / d)
+            pos, neg = [r for r in rs if r > 0], [r for r in rs if r < 0]
+            if len(rs) >= 3 and (not pos or not neg):
+                self.ratio, self.axis, self.ok = float(np.median(rs)), axis, True
+                return True
+            if verbose and pitch >= CAM_MIN_SHIFT:
+                log(f"[กล้อง] แกน{'ซ้าย-ขวา' if axis == 'x' else 'ขึ้น-ลง'} = เงย/ก้ม (ฉากขยับแนวตั้ง {pitch:.0f}px) ไม่ใช่หมุนซ้ายขวา")
         return False
 
     def calibrate(self, backends=None):
-        """ลองหลายวิธีสั่งลาก (input/sendevent, ช้า/เร็ว) จนกว่ากล้องจะขยับ แล้วจำค่าที่ใช้ได้"""
+        """ลองหลายวิธีสั่งลาก (input/sendevent, ช้า/เร็ว) จนกว่ากล้องจะหมุนซ้ายขวา แล้วจำค่าที่ใช้ได้"""
         global CAM_DRAG_MS
         combos = backends or [("input", 380), ("input", 700), ("sendevent", 600), ("input", 200)]
         for be, ms in combos:
@@ -1189,10 +1359,10 @@ class Camera:
             CAM_DRAG_MS = ms
             log(f"[กล้อง] ลองวิธี {be} ลาก {ms}ms")
             if self.try_calibrate():
-                log(f"[กล้อง] ✅ กล้องหมุนได้ ({be}, {ms}ms) ลาก 100px -> ฉากขยับ {self.ratio * 100:+.0f}px")
+                log(f"[กล้อง] ✅ หมุนซ้ายขวาได้ ({be}, {ms}ms, ลากแนว{'นอน' if self.axis == 'x' else 'ตั้ง'}) ลาก 100px -> ฉากขยับ {self.ratio * 100:+.0f}px")
                 self.save()
                 return True
-        log("[กล้อง] ❌ กล้องไม่ขยับทุกวิธี -> บอทจะหามองหินด้วยการเดินแทน (ดู README หัวข้อกล้อง / ใช้ test-input camera)")
+        log("[กล้อง] ❌ กล้องไม่หมุนซ้ายขวาทุกวิธี -> บอทจะหามองหินด้วยการเดินแทน")
         TOUCH_BACKEND["camera"] = "none"
         self.ok = False
         return False
@@ -1200,13 +1370,15 @@ class Camera:
     def save(self):
         os.makedirs(DEBUG_DIR, exist_ok=True)
         with open(CAM_FILE, "w") as f:
-            json.dump({"backend": TOUCH_BACKEND["camera"], "ms": CAM_DRAG_MS, "ratio": self.ratio}, f)
+            json.dump({"v": 2, "backend": TOUCH_BACKEND["camera"], "ms": CAM_DRAG_MS, "ratio": self.ratio, "axis": self.axis}, f)
 
     def load(self):
         global CAM_DRAG_MS
         try:
             d = json.load(open(CAM_FILE))
-            TOUCH_BACKEND["camera"], CAM_DRAG_MS, self.ratio = d["backend"], d["ms"], d["ratio"]
+            if d.get("v") != 2:
+                return False                        # ไฟล์เก่า (ยังไม่รู้เรื่องแกน) -> วัดใหม่
+            TOUCH_BACKEND["camera"], CAM_DRAG_MS, self.ratio, self.axis = d["backend"], d["ms"], d["ratio"], d["axis"]
             self.ok = abs(self.ratio) > 1e-3 and TOUCH_BACKEND["camera"] != "none"
             return self.ok
         except Exception:
@@ -1216,16 +1388,16 @@ class Camera:
         if getattr(self.dev, "dry", False):
             return False
         if self.load():
-            log(f"[กล้อง] ใช้ค่าที่วัดไว้ ({TOUCH_BACKEND['camera']}, {CAM_DRAG_MS}ms, อัตรา {self.ratio:+.2f})")
+            log(f"[กล้อง] ใช้ค่าที่วัดไว้ ({TOUCH_BACKEND['camera']}, {CAM_DRAG_MS}ms, แกน {self.axis}, อัตรา {self.ratio:+.2f})")
             return True
         return self.calibrate()
 
     def sweep_left(self):
-        """หมุนกล้องไปทางซ้าย 1 ก้าว (ฉากเลื่อนไปทางขวา)"""
+        """หมุนกล้องไปทางซ้าย 1 ก้าว (ฉากเลื่อนไปทางขวา) -> ฉากขยับจริงกี่ px"""
         d = math.copysign(min(CAM_DRAG_PX, CAM_MAX_SHIFT / abs(self.ratio)), self.ratio)
         sh, _ = self.drag(d)
         if abs(sh) < CAM_MIN_SHIFT:
-            log("[กล้อง] ลากแล้วฉากไม่ขยับ")
+            log("[กล้อง] ลากแล้วฉากไม่หมุน")
         return sh
 
     def turn_by(self, shift_px):
@@ -1364,6 +1536,7 @@ class RockLoop:
         self.search_pt = SEARCH_COORD
         self.box_pt = BOX_COORD
         self.wander_ang, self.wander_left = 0.0, 0
+        self._tkey, self._tui = None, 0.0
         self.stats = {"ตีสำเร็จ": 0, "กลับบ้านสำเร็จ": 0, "รอบ": 0}
 
     # ---------------------------------------------------------------- พื้นฐาน
@@ -1381,7 +1554,7 @@ class RockLoop:
         return any(math.hypot(rock["base"][0] - p[0], rock["base"][1] - p[1]) < 60 * self.fr.sx for p, _ in self.black)
 
     def report_time(self, event):
-        """พิมพ์/บันทึก: เวลาเกมที่อ่านได้, โปรไฟล์ที่ใช้, และหินที่ 'แต่ละโปรไฟล์' มองเห็นในภาพนี้"""
+        """บันทึกเวลาเกมที่อ่านได้/โปรไฟล์ที่ใช้/หินที่แต่ละโปรไฟล์เห็น ลงไฟล์ + หน้าจอแสดงบรรทัดเดียวเมื่อเปลี่ยน"""
         fr = self.fr
         counts = {p: len(find_rocks(fr, [p], self.profiles)[0]) for p in PERIODS}
         vis = visual_period(fr.img)
@@ -1389,10 +1562,16 @@ class RockLoop:
         msg = (f"เวลาเกม {self._tstr} ช่วง={self.period} (แหล่ง {self._src}) ใช้โปรไฟล์ {self.names} | แสงฉาก={vis} | "
                f"หินที่เห็น dawn={counts['dawn']} day={counts['day']} night={counts['night']}")
         log("[เวลา] " + msg)
+        key = (self._tstr, self.period, self._src)
+        if key != self._tkey and (time.time() - self._tui > 40 or self._tkey is None or key[1:] != self._tkey[1:]):
+            self._tkey, self._tui = key, time.time()
+            if self._tstr == "--:--":
+                ui(f"⚠️ อ่านเวลาไม่ได้ ใช้แสงฉาก={PERIOD_TH.get(vis, vis)}")
+            else:
+                ui(f"🕐 {self._tstr} {PERIOD_TH[self.period]}")
         if best != "-" and best not in self.names and counts[best] >= 2 and counts[best] > 2 * max(
                 [counts[n] for n in self.names if n in counts] + [0]):
-            log(f"[เวลา] ⚠️ โปรไฟล์ที่ใช้ ({self.names}) ไม่ตรงกับภาพ: '{best}' เจอหินมากกว่ามาก -> "
-                f"อ่านเวลาเกมผิด หรือรูปหินช่วง {self.period} ยังไม่พอ (เพิ่มรูปใน icons)")
+            ui(f"⚠️ รูปหินไม่ตรงเวลา ({PERIOD_TH[best]}เจอมากกว่า)")
         log_time_row([time.strftime("%Y-%m-%d %H:%M:%S"), self._tstr, self.period, self._src, "+".join(self.names), vis,
                       f"{counts['dawn']}/{counts['day']}/{counts['night']}", self.nav.last or "", event])
 
@@ -1400,12 +1579,18 @@ class RockLoop:
     def go_search(self):
         if not self.search_pt:
             return True
-        return self.nav.goto(self.search_pt, GOTO_TOL, "จุดมองหา")
+        ui("📍 ไปจุดมองหา")
+        ok = self.nav.goto(self.search_pt, GOTO_TOL, "จุดมองหา")
+        if not ok:
+            ui("⚠️ ไปจุดมองหาไม่ถึง (อ่านพิกัดไม่ได้?)")
+        return ok
 
     def go_box(self):
         if not self.box_pt:
             log("[กล่อง] ยังไม่ได้ตั้ง BOX_COORD -> ข้ามขั้นไปกล่อง")
+            ui("⏭ ข้ามกล่อง (ยังไม่ตั้ง BOX_COORD)")
             return None
+        ui("🏠 ไปกล่อง")
         ok = self.nav.goto(self.box_pt, BOX_TOL, "กล่อง")
         for k in range(6):                     # ใกล้กล่องแล้วรูปมือจะขึ้น ถ้ายังไม่ขึ้นขยับเข้าใกล้อีกนิด
             fr = self.frame()
@@ -1413,12 +1598,12 @@ class RockLoop:
             log(f"[กล่อง] ตรวจรูปมือ คะแนน {score:.2f} (เกณฑ์ {HAND_THRESHOLD}) {'เห็น' if seen else 'ยังไม่เห็น'}")
             if seen:
                 self.stats["กลับบ้านสำเร็จ"] += 1
-                log("🏠 กลับบ้านสำเร็จ (เห็นรูปมือที่กล่อง)")
+                ui("🏠 ✅ กลับบ้านสำเร็จ")
                 self.report_time("กลับบ้านสำเร็จ")
                 return True
             self.dev.joystick(random.uniform(-1, 1), random.uniform(-1, 1), 450)
             nap(0.8)
-        log("[กล่อง] ถึงพิกัดกล่องแล้วแต่ไม่เห็นรูปมือ -> เช็คพิกัดกล่อง หรือ HAND_THRESHOLD/ตำแหน่ง hand_guess (ใช้ calibrate)")
+        ui("⚠️ ถึงกล่องแล้วไม่เห็นรูปมือ")
         self.report_time("กลับบ้านไม่สำเร็จ")
         return False
 
@@ -1435,6 +1620,7 @@ class RockLoop:
         """ยืนมองจากจุดนี้: หมุนกล้องกวาดไปทางซ้ายหาหิน เจอแล้วคืนก้อนที่ใกล้สุด ไม่เจอเดินสุ่มสั้นๆ แล้วกวาดใหม่"""
         for rnd in range(ROCKS_PER_VISIT):
             steps = CAM_SWEEP_STEPS if self.cam.ok else 1
+            ui("🔎 กวาดหาหิน ←ซ้าย" if self.cam.ok else "🔎 มองหาหิน")
             for k in range(steps):
                 fr = self.frame()
                 rocks, _ = find_rocks(fr, self.names, self.profiles)
@@ -1442,41 +1628,78 @@ class RockLoop:
                 if k == 0:
                     self.report_time(f"มองหาหิน รอบ{rnd + 1} เจอ{len(rocks)}")
                 if rocks:
-                    log(f"[หา] เจอหิน {len(rocks)} ก้อน ใกล้สุดฐาน={rocks[0]['base']}")
+                    ui(f"🪨 เจอหิน {len(rocks)} ก้อน")
+                    log(f"[หา] ใกล้สุดฐาน={rocks[0]['base']}")
                     return rocks[0]
                 if self.cam.ok:
                     log(f"[กล้อง] ไม่เจอหิน -> หมุนกล้องไปทางซ้าย ({k + 1}/{steps})")
                     self.cam.sweep_left()
-            log(f"[หา] ไม่เจอหิน ({rnd + 1}/{ROCKS_PER_VISIT}) -> เดินสุ่มแล้วกวาดกล้องใหม่")
+            ui(f"🔎 ไม่เจอ เดินสุ่ม ({rnd + 1}/{ROCKS_PER_VISIT})")
             self.explore()
             if self.search_pt and self.nav.last:      # กันเดินไกลจากจุดมองหาเกินไป
                 c = read_coords_once(self.dev.grab())
                 if c and math.hypot(c[0] - self.search_pt[0], c[1] - self.search_pt[1]) > LEASH:
-                    log("[หา] เดินไกลจากจุดมองหาเกินกำหนด -> กลับไปจุดมองหา")
+                    ui("📍 ไกลเกิน กลับจุดมองหา")
                     self.go_search()
         return None
 
+    def near_pixels(self, fr):
+        """พื้นที่สีหินรอบตัวละคร (px อ้างอิง) ใช้ดูว่าหินใหญ่จนชิด/บังตัวละครแล้วไหม"""
+        m = rock_mask(fr.img, self.names, self.profiles)
+        x1, y1, x2, y2 = fr.box(NEAR_BOX)
+        sub = cv2.morphologyEx(m[y1:y2, x1:x2], cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        return float((sub > 0).sum()) / (fr.sx * fr.sy)
+
+    def _arrived(self, fr):
+        feet = fr.A("char_feet")
+        return {"base": feet, "bbox": (feet[0] - 40, feet[1] - 80, 80, 80), "area": 0, "dist": 0.0, "near": True}
+
+    def unstick(self, n, off):
+        """ติดต้นไม้/หิน/พุ่มไม้: เบี่ยงข้างสลับซ้ายขวา เดินอ้อม ถ้ายังติดถอยหลังก่อน ติดเกิน UNSTICK_MAX = ยอมแพ้ก้อนนี้"""
+        if n >= UNSTICK_MAX:
+            ui("🧱 ติดไม่หลุด ข้ามก้อนนี้")
+            return False
+        sgn = (1 if off >= 0 else -1) * (1 if n % 2 == 1 else -1)
+        ui(f"🧱 ติดสิ่งกีดขวาง เบี่ยง{'ขวา' if sgn > 0 else 'ซ้าย'} {n}/{UNSTICK_MAX}")
+        if n >= 3:
+            self.dev.joystick(0, 1, 500)                       # ถอยออกมาก่อน
+            nap(0.15)
+        self.dev.joystick(sgn, 0, 600 + 250 * n)
+        nap(0.15)
+        self.dev.joystick(0, -1, 700)                          # เดินหน้าผ่านสิ่งกีดขวาง
+        nap(0.15)
+        return True
+
     def approach(self, rock):
-        d, stuck, lost, last = self.dev, 0, 0, rock["base"]
+        """เดินเข้าหาหิน: หินซ้าย/ขวา -> หมุนกล้อง, อยู่กลาง -> เดินตรง, ติดของขวาง -> เบี่ยง, ชิดแล้ว (หินใหญ่บังตัว/หายตอนชิด) -> ตี"""
+        d, lost, last = self.dev, 0, rock["base"]
+        blocked = no_prog = 0
+        last_dist = None
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
+            feet = fr.A("char_feet")
+            if step >= 1 and self.near_pixels(fr) >= NEAR_PIX:
+                ui("📍 ชิดหินแล้ว")
+                return self._arrived(fr)
             rocks, _ = find_rocks(fr, self.names, self.profiles)
             rocks = [r for r in rocks if not self.blacklisted(r)]
             same = [r for r in rocks if math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 170 * fr.sx]
             tgt = (same or rocks or [None])[0]
             if tgt is None:
                 lost += 1
+                if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy:
+                    ui("📍 ชิดหินแล้ว (หินบังกล้อง)")
+                    return self._arrived(fr)
                 if lost >= 3:
-                    log("[เดิน] หินหลุดจอ")
+                    ui("⚠️ หินหลุดจอ")
                     return None
                 d.joystick(0, -1, 400)
                 continue
             lost, last = 0, tgt["base"]
-            feet = fr.A("char_feet")
             dx, dy = tgt["base"][0] - feet[0], tgt["base"][1] - feet[1]
             dist = math.hypot(dx, dy)
             if dist <= NEAR_DIST * fr.sy:
-                log(f"[เดิน] ชิดตัวละครแล้ว (ห่าง {dist:.0f}px)")
+                ui("📍 ชิดหินแล้ว")
                 return tgt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * 1.6)))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
@@ -1486,7 +1709,7 @@ class RockLoop:
             if self.cam.ok:
                 log(f"[เดิน] ก้าว {step + 1}: หินอยู่ด้าน{side} (เยื้อง {off:+.0f}px) ห่าง {dist:.0f}px")
                 if side != "กลาง":
-                    log(f"[กล้อง] หมุนกล้องไปทาง{side} เข้าหาหิน")
+                    ui(f"🎥 หินอยู่{side} → หมุนกล้อง{side}")
                     for _ in range(CAM_ALIGN_MAX):
                         self.cam.turn_by(-off)
                         fr = self.frame()
@@ -1498,21 +1721,29 @@ class RockLoop:
                         off = near[0]["bbox"][0] + near[0]["bbox"][2] / 2.0 - fr.A("char_feet")[0]
                         if abs(off) <= band:
                             break
+                    last_dist = None
                     continue
-                log(f"[เดิน] หินอยู่กลางจอ -> เดินตรงไป {ms}ms")
+                ui(f"🚶 เดินตรง ห่าง {dist:.0f}")
                 dx, dy = 0.0, -1.0
             else:
-                log(f"[เดิน] ก้าว {step + 1}: dx={dx:+.0f} dy={dy:+.0f} ห่าง {dist:.0f}px นาน {ms}ms (กล้องไม่หมุน ใช้จอยทิศตรง)")
+                ui(f"🚶 เดิน ห่าง {dist:.0f}")
+                log(f"[เดิน] dx={dx:+.0f} dy={dy:+.0f} นาน {ms}ms (กล้องไม่หมุน ใช้จอยทิศตรง)")
             before = fr.img
             d.joystick(dx, dy, ms)
             nap(0.15)
             fr2 = d.grab()
-            if fr2 is not None and frame_diff(before, fr2.img) < STUCK_FRAME_DIFF:
-                stuck += 1
-                if stuck >= 2:
-                    log("[เดิน] ติดสิ่งกีดขวาง -> เบี่ยงข้าง")
-                    d.joystick(random.choice([-1, 1]), 0.2, 700)
-                    stuck = 0
+            moved = fr2 is not None and frame_diff(before, fr2.img) >= STUCK_FRAME_DIFF
+            if last_dist is not None and dist > last_dist - PROGRESS_MIN * fr.sy:
+                no_prog += 1
+            else:
+                no_prog = 0
+            last_dist = dist
+            if not moved or no_prog >= 2:
+                blocked += 1
+                no_prog = 0
+                if not self.unstick(blocked, off):
+                    return None
+                last_dist = None
         return None
 
     def hit_once(self, rock):
@@ -1527,15 +1758,29 @@ class RockLoop:
             if bar["engaged"]:
                 name = read_target_name(fr, bar)
                 v = name_verdict(name, self.period)
-                log(f"[ตี] แถบเป้าหมายขึ้น ชื่อที่อ่านได้ '{name}' เลือด {bar['hp']:.2f} -> {v}")
+                short = (name.split("|")[0].strip() or "?")[:14]
+                ui(f"⚔️ ตี: {short.title()} เลือด {bar['hp'] * 100:.0f}%")
+                log(f"[ตี] ชื่อที่อ่านได้ '{name}' -> {v}")
                 return v
             log(f"[ตี] ยังไม่โดนเป้า ({t + 1}/{ENGAGE_TRIES}) -> ขยับเข้าใกล้อีกนิด")
             rocks, _ = find_rocks(fr, self.names, self.profiles)
-            if rocks:
+            if rocks and not rock.get("near"):
                 feet = fr.A("char_feet")
                 d.joystick(rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1], 300)
+            else:
+                d.joystick(0, -1, 250)                       # หินชิด/บังตัว: ดันไปข้างหน้าอีกนิดแล้วตีใหม่
             nap(0.2)
+        ui("⚠️ ตีไม่โดนเป้า")
         return "miss"
+
+    def leave(self, rock, why):
+        """ไม่ใช่หิน/ตีไม่โดน: ถอยออกจากเป้า เบี่ยงข้าง และจำตำแหน่งไว้ ไม่กลับมาตีอีก"""
+        ui(f"🚪 {why} ออกจากเป้า")
+        self.dev.joystick(0, 1, 1000)
+        nap(0.2)
+        self.dev.joystick(random.choice([-1, 1]), 0, 700)
+        nap(0.2)
+        self.black.append((rock["base"], time.time() + BLACKLIST_SEC))
 
     def mine_one(self):
         for k in range(ROCK_TRIES_PER_ROUND):
@@ -1548,52 +1793,48 @@ class RockLoop:
             res = self.hit_once(rock)
             if res == "ore":
                 self.stats["ตีสำเร็จ"] += 1
-                log("✅ ตีสำเร็จ (ชื่อบนแถบตรงกับแร่)")
+                ui("✅ ตีสำเร็จ (ชื่อตรงแร่)")
                 self.report_time("ตีสำเร็จ")
                 return True
             if res == "unknown":
                 self.stats["ตีสำเร็จ"] += 1
-                log("✅ ตีสำเร็จ (ตีโดนเป้า แต่อ่านชื่อไม่ชัด/ไม่มี tesseract - ยังไม่ยืนยันชื่อ)")
+                ui("✅ ตีสำเร็จ (อ่านชื่อไม่ชัด)")
                 self.report_time("ตีสำเร็จ(ชื่อไม่ยืนยัน)")
                 return True
-            log(f"[ตี] ไม่ใช่แร่/ตีไม่โดน ({res}) -> จำก้อนนี้ไว้แล้วหาก้อนใหม่")
-            self.black.append((rock["base"], time.time() + BLACKLIST_SEC))
+            self.leave(rock, "ไม่ใช่หิน" if res == "bad" else "ตีไม่โดน")
             self.report_time(f"ตีไม่สำเร็จ:{res}")
         return False
 
     # ---------------------------------------------------------------- ลูปหลัก
     def setup(self):
         self.frame()
+        ui("🎥 ตรวจกล้อง...")
         self.cam.ensure()
-        log(f"เวลาในเกมตอนเริ่ม: {self._tstr} ช่วง={self.period} (แหล่ง {self._src})")
+        ui("🎥 กล้อง: " + (f"ใช้ได้ (ลากแนว{'นอน' if self.cam.axis == 'x' else 'ตั้ง'})" if self.cam.ok else "หมุนไม่ได้ → เดินหาแทน"))
+        ui(f"🕐 {self._tstr} {PERIOD_TH[self.period]} ({self._src})")
         if not self.search_pt:
             c = self.nav.read_stable()
             if c:
                 self.search_pt = c
-                log(f"ไม่ได้ตั้ง SEARCH_COORD -> ใช้ตำแหน่งตอนเริ่ม {c} เป็นจุดมองหา")
+                ui(f"📍 จุดมองหา = ตำแหน่งนี้ {c[0]},{c[1]}")
             else:
-                log("อ่านพิกัดตอนเริ่มไม่ได้ -> ทำงานแบบไม่เดินตามพิกัด (หาหินรอบตัวอย่างเดียว)")
+                ui("⚠️ อ่านพิกัดไม่ได้ → ไม่เดินตามพิกัด")
         if not self.box_pt:
-            log("ไม่ได้ตั้ง BOX_COORD -> จะข้ามขั้นตอนไปกล่อง (ตั้งที่หัวไฟล์ภายหลัง)")
+            log("ไม่ได้ตั้ง BOX_COORD -> จะข้ามขั้นตอนไปกล่อง")
 
     def run(self, max_rounds=0):
         self.setup()
         while True:
             self.stats["รอบ"] += 1
             r = self.stats["รอบ"]
-            log("=" * 14 + f" รอบที่ {r} | ตีสำเร็จ {self.stats['ตีสำเร็จ']} | กลับบ้านสำเร็จ {self.stats['กลับบ้านสำเร็จ']} " + "=" * 14)
-            log("[1] ไปจุดมองหา")
+            ui(f"━━ รอบ {r} │ ตี {self.stats['ตีสำเร็จ']} │ บ้าน {self.stats['กลับบ้านสำเร็จ']} ━━")
             self.go_search()
-            log("[2] มองหาหิน -> เดินชิด -> ตี")
             ok = self.mine_one()
             if ok:
-                log("[3] กลับไปจุดมองหา")
                 self.go_search()
-                log("[4] ไปกล่อง")
                 self.go_box()
             else:
-                log("[!] รอบนี้ยังไม่ได้ตีสำเร็จ -> กลับจุดมองหาแล้วเริ่มใหม่")
-            log("[5] กลับไปจุดมองหา แล้ววนต่อ")
+                ui("↩ รอบนี้ยังไม่สำเร็จ เริ่มใหม่")
             self.go_search()
             if max_rounds and r >= max_rounds:
                 return
@@ -1776,6 +2017,7 @@ def main():
     r.add_argument("--max-rounds", type=int, default=0, help="วนกี่รอบแล้วหยุด (0 = ไม่หยุด)")
     r.add_argument("--period", choices=list(PERIODS), help="บังคับช่วงเวลา (ทดสอบ)")
     r.add_argument("--no-countdown", action="store_true")
+    r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
     r.add_argument("--image", help="ทดสอบกับภาพนิ่ง (ภาพแนวนอนที่หมุนกลับแล้ว) ไม่ต่อเครื่อง")
     c = sub.add_parser("calibrate")
@@ -1797,9 +2039,11 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT
+    global LAYOUT, QUIET
     if getattr(args, "layout", None):
         LAYOUT = args.layout
+    if args.cmd == "run":
+        QUIET = not args.verbose
     if args.cmd == "stop":
         cmd_stop(args)
         return
@@ -1834,16 +2078,19 @@ def main():
         log("เตือน: ไม่พบ pytesseract/tesseract -> อ่านชื่อแร่/นาฬิกา/พิกัดไม่ได้ (บอทจะเดินตามพิกัดไม่ได้)")
     profiles = load_profiles()
     bot = RockLoop(dev, profiles, args.period)
+    _to_file("", "=" * 20 + " เริ่มรัน " + "=" * 20)
     install_stop_handlers()
     try:
         if not (args.no_countdown or args.image):
             countdown(COUNTDOWN_SEC, "สลับเข้าเกม Utopia: Origin ได้เลย!")
         bot.run(args.max_rounds)
     except Stop as e:
-        log(f"[หยุด] {e}")
+        ui(f"⏹ หยุด: {e}")
     except KeyboardInterrupt:
-        log("[หยุด] ผู้ใช้กด Ctrl+C")
-    log(f"สรุป: {bot.stats}  (ดูบันทึกเวลา/โปรไฟล์ใน {TIME_LOG})")
+        ui("⏹ หยุด (Ctrl+C)")
+    QUIET = False
+    ui(f"📊 ตี {bot.stats['ตีสำเร็จ']} │ บ้าน {bot.stats['กลับบ้านสำเร็จ']} │ รอบ {bot.stats['รอบ']}")
+    ui("📄 รายละเอียด: debug/bot.log")
 
 
 if __name__ == "__main__":
