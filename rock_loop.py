@@ -68,7 +68,7 @@ ANCHORS = {
     "joy_center":    (227, 540),    # กลางจอยสติ๊ก
     "joy_radius":    65,
     "sword":         (1041, 539),   # ปุ่มดาบ (กดค้างเพื่อตี)
-    "hand_guess":    (835, 478),    # ปุ่มมือเก็บของ
+    "hand_guess":    (867, 440),    # ปุ่มมือเก็บของ (วงกลมเหนือปุ่มวิ่ง ขึ้นเมื่อมีของให้เก็บ)
     "char_feet":     (605, 548),    # เท้าตัวละคร
     "camera_start":  (929, 360),    # จุดเริ่มลากกล้อง (เท่ากับที่ลากจริง)
     "pickaxe_slot":  (370, 676),    # ช่องของที่ 1 = ที่ขุด (กดตอนขวานแดง = เปิดหน้าซ่อม)
@@ -136,7 +136,8 @@ HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใ�
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
 HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
 HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
-ATTACK_TRY_DIST = 280         # ใกล้เท่านี้ (px อ้างอิง) หยุดเดินแล้วกดตี ตัวละครจะวิ่งเข้าหาหิน/ไม้เองจนถึงระยะตี
+ATTACK_TRY_DIST = 165         # ใกล้เท่านี้ (px อ้างอิง เท้า->ฐานหิน) = หินชิดหน้าตัวละคร หยุดเดินแล้วกดตี (280 ตีไม่โดน 218 ก็ยังไม่โดน)
+SLOT1_AT_HP = 0.30            # เลือดเป้าเหลือไม่เกินนี้ ตีด้วยการกดช่อง 1 (ขวาน) แทนปุ่มดาบ ตัวละครจะได้ไม่วิ่งไปตีหินก้อนข้างๆ (0 = ปิด)
 PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
 PEEK_MAX = 4                  # ส่องไม่เกินกี่รอบต่อหินหนึ่งก้อน
 PEEK_NEARER = 0.85            # หินข้างๆ ต้องใกล้กว่าเป้าอย่างน้อยเท่านี้ (ระยะ/ระยะเป้า) ถึงเปลี่ยนเป้า
@@ -1257,7 +1258,7 @@ def find_hand(fr):
     for i in range(1, n):
         x, y, w, h, a = [int(v) for v in st[i]]
         rw, rh = w / fr.sx, h / fr.sy
-        if not (22 <= rw <= 46 and 22 <= rh <= 50) or a / float(w * h) < 0.35:
+        if not (22 <= rw <= 62 and 22 <= rh <= 62) or a / float(w * h) < 0.30:
             continue
         blob = (lab[y:y + h, x:x + w] == i).astype(np.uint8) * 255
         iou = 0.0
@@ -1940,6 +1941,7 @@ class RockLoop:
         self._tkey, self._tui = None, 0.0
         self._nosword = self._nocoord = 0
         self._tcoord = time.time()
+        self.slot_ok = True
         self.stats = {"ตีสำเร็จ": 0, "เก็บ": 0, "กลับบ้านสำเร็จ": 0, "รอบ": 0}
 
     # ---------------------------------------------------------------- พื้นฐาน
@@ -2401,6 +2403,8 @@ class RockLoop:
         """ตีรัวจนเลือดเป้าหมดหมด -> 'empty' | 'gone' (แถบหาย) | 'stuck' (เลือดไม่ลด) | 'timeout'
         แตะดาบรัว BURST_TAPS ครั้งแล้วค่อยอ่านเลือด (ไม่ใช้นาฬิกา/ยามในลูปนี้ให้เร็ว) เหนื่อย = พักแล้วตีต่อ"""
         d, t0, last_hp, stale, nudges, lost = self.dev, time.time(), None, 0, 0, 0
+        slot_prev = slot_said = False
+        slot_stale = 0
         while time.time() - t0 < HIT_TIMEOUT:
             fr = self.frame(fast=True)
             if banner_present(fr):
@@ -2436,6 +2440,11 @@ class RockLoop:
                 ui("⛏ เลือดหมดแล้ว")
                 return "empty"
             ui(f"⛏ ตีรัว เลือด {bar['hp'] * 100:.0f}%")
+            if slot_prev and last_hp is not None:
+                slot_stale = slot_stale + 1 if bar["hp"] >= last_hp - 0.01 else 0
+                if slot_stale >= 2:                              # กดช่อง 1 แล้วเลือดไม่ลด 2 รอบ (กดคู่ = ขวานอยู่ที่เดิม) กลับไปใช้ปุ่มดาบ
+                    self.slot_ok = False
+                    ui("⚠️ กดช่อง 1 แล้วเลือดไม่ลด → กลับไปใช้ปุ่มดาบ")
             if last_hp is not None and bar["hp"] >= last_hp - 0.01:
                 stale += 1
             else:
@@ -2452,7 +2461,14 @@ class RockLoop:
                     continue
                 ui("⛏ เลือดไม่ลด ขยับเข้าไปอีกนิด")
                 d.joystick(0, -1, 300)
-            d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
+            slot_prev = bool(SLOT1_AT_HP) and self.slot_ok and bar["hp"] <= SLOT1_AT_HP
+            if slot_prev:
+                if not slot_said:
+                    slot_said = True
+                    ui(f"🔢 เลือดเหลือ ≤{SLOT1_AT_HP * 100:.0f}% → กดช่อง 1 ตี (ไม่วิ่งไปหินข้างๆ)")
+                d.burst(*fr.A("pickaxe_slot"), 1)
+            else:
+                d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
         ui("⚠️ ตีนานเกินกำหนด")
         return "timeout"
 
@@ -2469,7 +2485,7 @@ class RockLoop:
             seen = seen or bool(h)
             if k > 0 and seen and not h and find_pick_all(fr) is None:
                 break                                            # รูปมือหายแล้ว = ไม่มีของเหลือ
-            d.tap(*(h or (int(HAND_LOOT_POS[0] * fr.sx), int(HAND_LOOT_POS[1] * fr.sy))))
+            d.tap(*(h or fr.A("hand_guess")))
             if k == 0:
                 ui("🖐 กดรูปมือ" if h else "🖐 กดตำแหน่งรูปมือ (ตรวจไม่เจอ)")
             nap(PICK_WAIT)
@@ -2788,6 +2804,7 @@ def main():
     r.add_argument("--pick-wait", type=float, help="กดปุ่มมือแล้วรอกี่วินาทีก่อนหา Pick All (ค่าเริ่ม 0.4)")
     r.add_argument("--scan-shift", type=int, help="ฉากเลื่อนกี่ px ต่อช่วงหมุน 60° (ค่าเริ่ม 850 มากขึ้น=หมุนมากขึ้น)")
     r.add_argument("--clock-interval", type=float, help="อ่านนาฬิกาในเกมทุกกี่วินาที (ค่าเริ่ม 3 น้อยลง=อ่านถี่ขึ้น แต่ช้าลง)")
+    r.add_argument("--no-slot1", action="store_true", help="ตอนเลือดเหลือน้อยไม่ใช้การกดช่อง 1 (ใช้ปุ่มดาบตลอด)")
     r.add_argument("--no-viz", action="store_true", help="ไม่เซฟภาพ debug/live.jpg (เส้นแดง/เขียวแสดงเป้าที่ล็อก)")
     r.add_argument("--view", type=int, nargs="?", const=8765, help="เปิดเว็บดูภาพล็อกเป้าสด (พอร์ตเริ่มต้น 8765)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
@@ -2813,7 +2830,7 @@ def main():
     for sp in (r, c, t, cc, dr):
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL, VIZ
+    global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL, VIZ, SLOT1_AT_HP
     if getattr(args, "no_guard", False):
         GUARD = False
     if getattr(args, "collect_delay", None) is not None:
@@ -2822,6 +2839,8 @@ def main():
         PICK_WAIT = max(0.05, args.pick_wait)
     if getattr(args, "no_viz", False):
         VIZ = False
+    if getattr(args, "no_slot1", False):
+        SLOT1_AT_HP = 0.0
     if getattr(args, "clock_interval", None) is not None:
         CLOCK_READ_INTERVAL = max(0.0, args.clock_interval)
     if getattr(args, "scan_shift", None):
