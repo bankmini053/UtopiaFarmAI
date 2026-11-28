@@ -143,7 +143,7 @@ SLOT1_PRESS_MS = 450          # กดช่อง 1 ค้างกี่ ms (�
 PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
 PEEK_MAX = 4                  # ส่องไม่เกินกี่รอบต่อหินหนึ่งก้อน
 PEEK_NEARER = 0.85            # หินข้างๆ ต้องใกล้กว่าเป้าอย่างน้อยเท่านี้ (ระยะ/ระยะเป้า) ถึงเปลี่ยนเป้า
-ALIGN_STEP_CAP = 150          # หมุนกล้องทีละไม่เกินกี่ px ของฉาก (หมุนทีละนิดไปเรื่อยๆ)
+ALIGN_STEP_CAP = 260          # หมุนกล้องทีละไม่เกินกี่ px ของฉาก (หมุนทีละนิดไปเรื่อยๆ)
 STALL_NEED = 2                # เดินแล้วภาพไม่ขยับติดกันกี่ครั้งถึงนับว่าติด (ของนิ่งไม่ขวางทางตรง)
 JUMP_UP = 0.30                # เลือดเป้าพุ่งขึ้นเกินนี้ = ก้อนเดิมแตกแล้ว ระบบล็อกก้อนใหม่เอง
 SINGLE_TAP_HP = 0.30          # เลือดเหลือน้อยกว่านี้ตีทีละครั้ง กันตีเลยไปโดนก้อนข้างๆ
@@ -151,7 +151,10 @@ REPAIR_WAIT = 0.9             # รอหน้าต่างซ่อมขึ
 LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อนเดิมต้องอยู่ห่างจากตำแหน่งที่ติดตามไว้ไม่เกินนี้ (px อ้างอิง) ไม่งั้นนับว่าเสียเป้า ไม่สลับไปก้อนอื่น
 ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
 ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
-ALIGN_GAIN = 0.85             # หมุนทีละ 85% ของที่เยื้อง กันหมุนเลยเป้า
+LANE_HALF = 90                # 'เส้นแดง' ทางตรงหน้าตัวละคร: หินต้องอยู่ในช่วงกลางจอ ±นี้ (px อ้างอิง) ถึงจะเดินตรง/ตีได้
+LANE_IN = 60                  # หมุนกล้องจนหินเข้ามาอยู่ห่างกลางจอไม่เกินนี้ (ในเส้นสบายๆ)
+ALIGN_MAX_TURNS = 8           # หมุนกล้องปรับเข้าเส้นไม่เกินกี่ครั้ง
+ALIGN_GAIN = 1.0             # หมุนทีละ 85% ของที่เยื้อง กันหมุนเลยเป้า
 VIZ = True                    # เซฟภาพ debug/live.jpg ขีดเส้นแดง/เขียวแสดงเป้าที่ล็อก (ปิดด้วย run --no-viz)
 NAME_TILT = True              # อ่านชื่อไม่ได้ -> ก้มกล้องลง 1 ระยะแล้วอ่านใหม่ แล้วเงยกลับที่เดิม
 NAME_TILT_PX = 140            # ระยะลากก้มกล้อง (px) ต่อ 1 ระยะ
@@ -1880,7 +1883,9 @@ def draw_track(fr, rocks, tgt, off, aligned, dist, lost=False):
         x, y, w, h = r["bbox"]
         cv2.rectangle(img, (int(x), int(y)), (int(x + w), int(y + h)), (170, 170, 170), 1)
     cx = feet[0]
-    cv2.line(img, (cx, 0), (cx, img.shape[0]), (255, 255, 0), 1)             # แนวหน้าตัวละคร (เส้นฟ้าอ่อน)
+    for sgn in (-1, 1):                                                      # เส้นทางตรงหน้าตัวละคร (หินต้องอยู่ระหว่างเส้นนี้)
+        lx = int(cx + sgn * LANE_HALF * fr.sx)
+        cv2.line(img, (lx, 0), (lx, img.shape[0]), (255, 255, 0), 2)
     if tgt is not None:
         col = (0, 220, 0) if aligned else (0, 0, 255)
         x, y, w, h = tgt["bbox"]
@@ -2253,15 +2258,43 @@ class RockLoop:
         nap(0.15)
         return True
 
+    def turn_to_lane(self, fr, tgt):
+        """หมุนกล้องให้หินที่ล็อกเข้ามาอยู่ในเส้น (กลางจอ ±LANE_IN) หมุนเต็มระยะที่เยื้อง ไม่หมุนสั้น
+        -> (frame, หินก้อนที่ล็อก หรือ None ถ้าเสียเป้า, อยู่ในเส้นแล้วไหม)"""
+        for i in range(ALIGN_MAX_TURNS):
+            feet = fr.A("char_feet")
+            off = tgt["bbox"][0] + tgt["bbox"][2] / 2.0 - feet[0]
+            if abs(off) <= LANE_IN * fr.sx:
+                return fr, tgt, True
+            cmd = max(-ALIGN_STEP_CAP, min(ALIGN_STEP_CAP, -off * ALIGN_GAIN))
+            sh = self.cam.turn_by(cmd) or 0.0
+            if abs(sh) < 4:                                      # วัดฉากขยับไม่ได้ (พื้นเรียบ) สมมติว่าขยับตามสั่ง
+                sh = cmd * 0.8
+            exp = (tgt["base"][0] + sh, tgt["base"][1])
+            fr = self.frame()
+            rr, _ = find_rocks(fr, self.names, self.profiles)
+            cand = sorted((r for r in rr if not self.blacklisted(r) and math.hypot(r["base"][0] - exp[0], r["base"][1] - exp[1]) < 2.0 * LOCK_RADIUS * fr.sx),
+                          key=lambda r: math.hypot(r["base"][0] - exp[0], r["base"][1] - exp[1]))
+            if not cand:
+                return fr, None, False
+            tgt = cand[0]
+            off2 = tgt["bbox"][0] + tgt["bbox"][2] / 2.0 - fr.A("char_feet")[0]
+            log(f"[หมุน] ครั้ง {i + 1}: สั่ง {cmd:+.0f} ฉากขยับ {sh:+.0f} เยื้องเหลือ {off2:+.0f}")
+            save_live(draw_track(fr, rr, tgt, off2, abs(off2) <= LANE_IN * fr.sx, math.hypot(*(np.array(tgt["base"]) - np.array(fr.A("char_feet"))))))
+        feet = fr.A("char_feet")
+        off = tgt["bbox"][0] + tgt["bbox"][2] / 2.0 - feet[0]
+        return fr, tgt, abs(off) <= LANE_HALF * fr.sx
+
     def approach(self, rock):
         """เดินเข้าหาหิน: หินซ้าย/ขวา -> หมุนกล้อง, อยู่กลาง -> เดินตรง, ติดของขวาง -> เบี่ยง, ชิดแล้ว (หินใหญ่บังตัว/หายตอนชิด) -> ตี"""
         d, lost, last = self.dev, 0, rock["base"]
         blocked = no_prog = stalls = walks = peeks = 0
         last_dist = last_seg = None
+        last_inlane = False
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
             feet = fr.A("char_feet")
-            if step >= 1 and (last_dist is None or last_dist <= NEAR_TRUST_DIST * fr.sy) and self.near_pixels(fr) >= NEAR_PIX:
+            if step >= 1 and last_dist is not None and last_dist <= NEAR_TRUST_DIST * fr.sy and self.near_pixels(fr) >= NEAR_PIX:
                 ui("📍 ชิดหินแล้ว")
                 return self._arrived(fr)
             rocks, _ = find_rocks(fr, self.names, self.profiles)
@@ -2273,7 +2306,7 @@ class RockLoop:
                 lost += 1
                 save_live(draw_track(fr, rocks, None, 0, False, 0, lost=True))
                 ui(f"🔴 เสียเป้า ({lost}/3)")
-                if last_seg is not None and last_seg <= 1.8 * ATTACK_TRY_DIST * fr.sy:
+                if last_seg is not None and last_seg <= 1.8 * ATTACK_TRY_DIST * fr.sy and last_inlane:
                     ui("📍 หินหายตอนชิดตัว (ตัวละครบังหิน) → ลองกดตี")
                     return self._arrived(fr)
                 if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy and self.near_pixels(fr) >= LOST_NEAR_PIX:
@@ -2289,34 +2322,31 @@ class RockLoop:
             dist = math.hypot(dx, dy)
             seg = seg_dist(fr, tgt["base"])
             last_seg = seg
-            if seg <= ATTACK_TRY_DIST * fr.sy:
-                ui("📍 ชิดตัวแล้ว → ลองกดตี")
-                return tgt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
             off = cx - feet[0]                                   # + = หินอยู่ขวาของกลางจอ
             band = CAM_CENTER_BAND * fr.sx
-            side = "ซ้าย" if off < -band else ("ขวา" if off > band else "กลาง")
+            side = "ซ้าย" if off < -LANE_HALF * fr.sx else ("ขวา" if off > LANE_HALF * fr.sx else "กลาง")
+            inlane = (not self.cam.ok) or abs(off) <= LANE_HALF * fr.sx
+            last_inlane = inlane
+            if inlane and seg <= ATTACK_TRY_DIST * fr.sy:        # ชิดตัว + อยู่หน้าตัวละคร (ในเส้น) ถึงกดตีได้
+                save_live(draw_track(fr, rocks, tgt, off, True, dist))
+                ui("📍 ชิดตัวแล้ว อยู่ในเส้น → ลองกดตี")
+                return tgt
             if self.cam.ok:
                 log(f"[เดิน] ก้าว {step + 1}: หินอยู่ด้าน{side} (เยื้อง {off:+.0f}px) ห่าง {dist:.0f}px")
-                if abs(off) > band * ALIGN_OUT:
+                if not inlane:
                     save_live(draw_track(fr, rocks, tgt, off, False, dist))
-                    ui(f"🔴 หินอยู่{side} {abs(off):.0f}px → ล็อกแล้วหมุนกล้องให้ตรง")
-                    for _ in range(CAM_ALIGN_MAX * 2):
-                        sh = self.cam.turn_by(max(-ALIGN_STEP_CAP, min(ALIGN_STEP_CAP, -off * ALIGN_GAIN)))
-                        last = (last[0] + sh, last[1])               # หินเลื่อนตามฉาก คาดตำแหน่งใหม่ไว้ก่อน ไม่สลับก้อน
-                        fr = self.frame()
-                        rr, _ = find_rocks(fr, self.names, self.profiles)
-                        near = sorted((r for r in rr if not self.blacklisted(r) and math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 1.3 * LOCK_RADIUS * fr.sx),
-                                      key=lambda r: math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]))
-                        if not near:
-                            break
-                        last = near[0]["base"]
-                        off = near[0]["bbox"][0] + near[0]["bbox"][2] / 2.0 - fr.A("char_feet")[0]
-                        save_live(draw_track(fr, rr, near[0], off, abs(off) <= band * ALIGN_IN, math.hypot(*(np.array(near[0]["base"]) - np.array(fr.A("char_feet"))))))
-                        if abs(off) <= band * ALIGN_IN:
-                            break
-                    last_dist = None
+                    ui(f"🔴 หินอยู่{side} {abs(off):.0f}px นอกเส้น → หมุนกล้องให้เข้าเส้น")
+                    fr, nt, ok = self.turn_to_lane(fr, tgt)
+                    if nt is None:
+                        lost += 1
+                        ui(f"🔴 เสียเป้าตอนหมุน ({lost}/3)")
+                        if lost >= 3:
+                            return None
+                        last_dist = None
+                        continue
+                    last, last_dist = nt["base"], None
                     continue
                 walks += 1
                 if peeks < PEEK_MAX and walks % PEEK_EVERY == 1 and seg > ATTACK_TRY_DIST * 1.5 * fr.sy:
@@ -2326,7 +2356,7 @@ class RockLoop:
                         last, last_dist = new["base"], None
                         continue
                 save_live(draw_track(fr, rocks, tgt, off, True, dist))
-                ui(f"🟢 ล็อกเป้า หันตรงแล้ว → เดินตรง ห่าง {dist:.0f}")
+                ui(f"🟢 อยู่ในเส้นแล้ว → เดินตรง ห่าง {dist:.0f}")
                 dx, dy = 0.0, -1.0
             else:
                 ui(f"🚶 เดิน ห่าง {dist:.0f}")
@@ -2374,6 +2404,13 @@ class RockLoop:
             log(f"[ตี] ยังไม่โดนเป้า ({t + 1}/{ENGAGE_TRIES}) -> ขยับเข้าใกล้อีกนิด")
             rocks, _ = find_rocks(fr, self.names, self.profiles)
             rocks = [r for r in rocks if not self.blacklisted(r)]
+            if rocks and self.cam.ok:
+                offr = rocks[0]["bbox"][0] + rocks[0]["bbox"][2] / 2.0 - fr.A("char_feet")[0]
+                if abs(offr) > LANE_HALF * fr.sx:                # หินไม่อยู่หน้าตัวละคร: หมุนกล้องให้เข้าเส้นก่อนตีใหม่
+                    ui(f"🔴 ตียังไม่โดน หินอยู่ข้าง {abs(offr):.0f}px → หมุนกล้องให้เข้าเส้น")
+                    self.turn_to_lane(fr, rocks[0])
+                    nap(0.2)
+                    continue
             if rocks:
                 feet = fr.A("char_feet")
                 dx, dy = rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1]
