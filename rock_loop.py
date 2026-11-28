@@ -155,8 +155,9 @@ LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อน�
 ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
 ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
 SIDE_TRY_DIST = 90             # ระหว่างเดิน ถ้าเห็นหินก้อนอื่นชิดข้างตัวใกล้ขนาดนี้ ลองกดตีก้อนนั้นเลย
-LANE_HALF = 90                # 'เส้นแดง' ทางตรงหน้าตัวละคร: หินต้องอยู่ในช่วงกลางจอ ±นี้ (px อ้างอิง) ถึงจะเดินตรง/ตีได้
-LANE_IN = 60                  # หมุนกล้องจนหินเข้ามาอยู่ห่างกลางจอไม่เกินนี้ (ในเส้นสบายๆ)
+LANE_HALF = 66                # 'เส้นแดง' ทางตรงหน้าตัวละคร: หินต้องอยู่ในช่วงกลางจอ ±นี้ (px อ้างอิง) ถึงจะเดินตรง/ตีได้
+LANE_IN = 45                  # หมุนกล้องจนหินเข้ามาอยู่ห่างกลางจอไม่เกินนี้ (ในเส้นสบายๆ)
+STRIP_W = 129                 # แบ่งจอเป็น 7 ช่องแนวตั้ง กว้างช่องละ ~129px (ตัวละครอยู่ช่องกลาง ช่อง 4) ใช้บอกว่าหินอยู่ห่างกี่ช่อง
 ALIGN_MAX_TURNS = 8           # หมุนกล้องปรับเข้าเส้นไม่เกินกี่ครั้ง
 ALIGN_GAIN = 1.0             # หมุนทีละ 85% ของที่เยื้อง กันหมุนเลยเป้า
 VIZ = True                    # เซฟภาพ debug/live.jpg ขีดเส้นแดง/เขียวแสดงเป้าที่ล็อก (ปิดด้วย run --no-viz)
@@ -201,6 +202,7 @@ LAYOUT = "auto"
 LAYOUT_ROI = {
     "A": {"clock": (0, 4, 64, 32), "coords": (40, 246, 290, 276)},
     "B": {"clock": (888, 3, 958, 25), "coords": (1072, 130, 1205, 160)},
+    "C": {"clock": (352, 538, 418, 562), "coords": (1052, 130, 1190, 162)},     # นาฬิกาย้ายมาอยู่เหนือแถบแชท ซ้ายล่าง
 }
 
 # โปรไฟล์สีหินสำรอง (ถ้าไม่มีโฟลเดอร์ templates/rocks จะใช้ชุดนี้)
@@ -679,7 +681,7 @@ _LAST_LAYOUT = [None]
 
 
 def layouts_to_try():
-    order = ["A", "B"] if LAYOUT == "auto" else [LAYOUT]
+    order = ["A", "B", "C"] if LAYOUT == "auto" else [LAYOUT]
     if _LAST_LAYOUT[0] in order:
         order.remove(_LAST_LAYOUT[0])
         order.insert(0, _LAST_LAYOUT[0])
@@ -2265,12 +2267,16 @@ class RockLoop:
     def turn_to_lane(self, fr, tgt):
         """หมุนกล้องให้หินที่ล็อกเข้ามาอยู่ในเส้น (กลางจอ ±LANE_IN) หมุนเต็มระยะที่เยื้อง ไม่หมุนสั้น
         -> (frame, หินก้อนที่ล็อก หรือ None ถ้าเสียเป้า, อยู่ในเส้นแล้วไหม)"""
+        prev = None
         for i in range(ALIGN_MAX_TURNS):
             feet = fr.A("char_feet")
             off = tgt["bbox"][0] + tgt["bbox"][2] / 2.0 - feet[0]
             if abs(off) <= LANE_IN * fr.sx:
                 return fr, tgt, True
-            cmd = max(-ALIGN_STEP_CAP, min(ALIGN_STEP_CAP, -off * ALIGN_GAIN))
+            gain = ALIGN_GAIN * (0.7 if prev is not None and prev * off < 0 else 1.0)   # หมุนเลยแล้ว หมุนกลับน้อยลงกันแกว่ง
+            prev = off
+            log(f"[หมุน] หินอยู่ห่าง {abs(off) / (STRIP_W * fr.sx):.1f} ช่อง ({'ซ้าย' if off < 0 else 'ขวา'})")
+            cmd = max(-ALIGN_STEP_CAP, min(ALIGN_STEP_CAP, -off * gain))
             sh = self.cam.turn_by(cmd) or 0.0
             if abs(sh) < 4:                                      # วัดฉากขยับไม่ได้ (พื้นเรียบ) สมมติว่าขยับตามสั่ง
                 sh = cmd * 0.8
@@ -2897,7 +2903,7 @@ def main():
     dr.add_argument("--landscape", action="store_true")
     dr.add_argument("--dry", action="store_true")
     for sp in (r, c, t, cc, dr):
-        sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
+        sp.add_argument("--layout", choices=["auto", "A", "B", "C"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ C=นาฬิกาซ้ายล่าง (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
     global LAYOUT, QUIET, GUARD, SEARCH_COORD, COLLECT_DELAY, PICK_WAIT, CAM_SCAN_SHIFT, CLOCK_READ_INTERVAL, VIZ, SLOT1_AT_HP
     if getattr(args, "no_guard", False):
