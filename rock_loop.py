@@ -137,9 +137,10 @@ HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใ�
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
 HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
 HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
-ATTACK_TRY_DIST = 20          # ฐานหินห่างจากเส้นตัวละคร (เท้า->หัว) ไม่เกินนี้ = ถึงระดับ 'หัว' ลองกดตีครั้งแรก
+ATTACK_TRY_DIST = 0           # (เดิม) ระยะจากเส้นตัวละคร ปิดไว้ ใช้ ARRIVE_T แทน
 SLOT1_AT_HP = 0.0            # เลือดเป้าเหลือไม่เกินนี้: กดช่อง 1 (ขวาน) 1 ครั้งแบบช้าๆ แล้วตีปกติต่อ (0 = ปิด)
-REACH_LEVELS = (0.70, 0.45, 0.15)   # ระดับระยะตี วัดจากฐานหินตามแนวเท้า(0)->หัว(1): หัว / กลาง / ชิด (ตามภาพที่ผู้ใช้ทำเครื่องหมาย)
+REACH_LEVELS = (0.15,)          # ตีได้เฉพาะระดับ 'ชิดเท้า' (ฐานหินอยู่ ~15% จากเท้าตามแนวเท้า->หัว) ระดับหัว/กลางตีไม่โดน เดินเข้าอย่างเดียว
+ARRIVE_T = 0.30               # ถึงระดับนี้ (ฐานหินห่างเท้าไม่เกิน 30% ของตัวละคร) ถึงหยุดเดินแล้วกดตี
 SLOW_HOLD_MS = 450            # เลือดต่ำ: กดปุ่มดาบค้างทีละครั้งช้าๆ
 SLOW_GAP = 0.45
 SLOT1_PRESS_MS = 450          # กดช่อง 1 ค้างกี่ ms (ช้าๆ แต่ไม่ช้ามาก)
@@ -2300,7 +2301,7 @@ class RockLoop:
         d, lost, last = self.dev, 0, rock["base"]
         blocked = no_prog = stalls = walks = peeks = 0
         last_dist = last_seg = None
-        last_inlane = False
+        last_inlane, last_t = False, None
         side_tries = 0
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
@@ -2317,7 +2318,7 @@ class RockLoop:
                 lost += 1
                 save_live(draw_track(fr, rocks, None, 0, False, 0, lost=True))
                 ui(f"🔴 เสียเป้า ({lost}/3)")
-                if last_seg is not None and last_seg <= 1.8 * ATTACK_TRY_DIST * fr.sy and last_inlane:
+                if last_seg is not None and (last_seg <= 1.8 * ATTACK_TRY_DIST * fr.sy or (last_t is not None and last_t <= 0.7)) and last_inlane:
                     ui("📍 หินหายตอนชิดตัว (ตัวละครบังหิน) → ลองกดตี")
                     return self._arrived(fr)
                 if last_dist is not None and last_dist <= LOST_NEAR_DIST * fr.sy and self.near_pixels(fr) >= LOST_NEAR_PIX:
@@ -2333,16 +2334,21 @@ class RockLoop:
             dist = math.hypot(dx, dy)
             seg = seg_dist(fr, tgt["base"])
             last_seg = seg
+            span = max(1.0, feet[1] - fr.A("char_head")[1])
+            tt = (feet[1] - tgt["base"][1]) / span              # ฐานหินตามแนวตัวละคร 0=เท้า 1=หัว >1=เลยหัว
+            last_t = tt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * (3.0 if dist > 200 * fr.sy else 1.6))))
-            if seg < 160 * fr.sy:                                # ใกล้แล้ว เดินสั้นๆ ให้ชิดเท้าพอดี ไม่เลยหิน
-                ms = int(min(ms, max(250, seg * WALK_MS_PER_PX * 0.8)))
+            if tt < 1.6:                                         # ใกล้แล้ว เดินสั้นๆ ให้ชิดเท้าพอดี ไม่เลยหิน
+                ms = int(min(ms, max(250, (tt - REACH_LEVELS[0]) * span * WALK_MS_PER_PX)))
             cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
             off = cx - feet[0]                                   # + = หินอยู่ขวาของกลางจอ
             band = CAM_CENTER_BAND * fr.sx
             side = "ซ้าย" if off < -LANE_HALF * fr.sx else ("ขวา" if off > LANE_HALF * fr.sx else "กลาง")
             inlane = (not self.cam.ok) or abs(off) <= LANE_HALF * fr.sx
             last_inlane = inlane
-            if inlane and seg <= ATTACK_TRY_DIST * fr.sy:        # ชิดตัว + อยู่หน้าตัวละคร (ในเส้น) ถึงกดตีได้
+            if self.cam.ok and tt > 0.6 and abs(off) > LANE_IN * fr.sx:      # ยังไกล: ต้องหันให้ตรงกลางจริงก่อนเดินตรง ไม่เดินเฉียง
+                inlane = False
+            if inlane and (tt <= ARRIVE_T or seg <= ATTACK_TRY_DIST * fr.sy):        # ชิดตัว + อยู่หน้าตัวละคร (ในเส้น) ถึงกดตีได้
                 save_live(draw_track(fr, rocks, tgt, off, True, dist))
                 ui("📍 ชิดตัวแล้ว อยู่ในเส้น → ลองกดตี")
                 return tgt
@@ -2440,7 +2446,7 @@ class RockLoop:
                 if nxt:                                           # เดินตรงเข้าไปทีละระดับ หัว -> กลาง -> ชิด แล้วลองตีใหม่
                     goal = nxt[0]
                     ms = int(min(1500, max(250, (tt - goal) * span * WALK_MS_PER_PX)))
-                    ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เดินเข้าระดับ{'หัว' if goal == REACH_LEVELS[0] else ('กลาง' if goal == REACH_LEVELS[1] else 'ชิด')}")
+                    ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เดินเข้าให้ชิดเท้า")
                     log(f"[ตี] ฐานหิน t={tt:.2f} -> เป้า {goal:.2f} เดิน {ms}ms")
                     d.joystick(0, -1, ms)
                 else:
