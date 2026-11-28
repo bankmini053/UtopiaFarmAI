@@ -225,6 +225,10 @@ def stop_requested():
         return True
     if os.path.exists(STOP_FILE):
         STOP_FLAG.set()
+        try:
+            os.remove(STOP_FILE)                 # ใช้แล้วลบทิ้ง ไม่ให้ค้างไปหยุดรอบหน้า
+        except OSError:
+            pass
         return True
     return False
 
@@ -2040,6 +2044,11 @@ def main():
         sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
     global LAYOUT, QUIET
+    if args.cmd != "stop":                       # ไฟล์ STOP เก่าที่ค้างอยู่ ต้องไม่ทำให้รันรอบใหม่หยุดทันที
+        try:
+            os.remove(STOP_FILE)
+        except OSError:
+            pass
     if getattr(args, "layout", None):
         LAYOUT = args.layout
     if args.cmd == "run":
