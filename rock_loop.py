@@ -1656,6 +1656,9 @@ class RockLoop:
         """ก่อนเริ่ม: ต้องเห็นปุ่มตีและอ่านพิกัดได้ ไม่งั้นหยุดทันที"""
         if not GUARD:
             return
+        if pytesseract is None or not HAS_TESS:
+            ui("⛔ ยังไม่ได้ลง pytesseract → รัน: pip install pytesseract")
+            raise Stop("ไม่มี pytesseract (อ่านนาฬิกา/พิกัดไม่ได้)")
         why, fr = "", None
         for k in range(4):
             fr = self.frame(guard=False)
