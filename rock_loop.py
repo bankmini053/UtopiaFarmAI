@@ -137,8 +137,11 @@ HAND_ZONE = (330, 230, 880, 560)   # รูปมือลอยขึ้นใ�
 HAND_TPL_B64 = "iVBORw0KGgoAAAANSUhEUgAAAB4AAAAhCAAAAADrd0QGAAAAoElEQVQoFXXBiYGbAAAEMU3/RW+Mf3NEymGEya8sjDCxvDXCCBPLS0OY3CwsTxnC5GYxeYghjLCY3IUhjDCHHHIYYcQccsjdCPORmzyMmI/c5Gk030Je5iTkbU4ib3MS+ZhfkY/5FfmYk+TL/Eq+zK+Eyd38Sgw5zElhCHNWDvMfuZtreZhLeZoreZkLeZu/8jFn5cI8lSvzUC7NIbk2wj9KWTsc628B7QAAAABJRU5ErkJggg=="
 HAND_TPL2_B64 = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAdCAAAAADu9TFbAAAAkklEQVQoFXXBgWGDMAADMPn/oz0CJM0KlWJo/JISKt5FCRWvQgkVp4pNUEKFOsQmDiVU1BAfMVSoJZY4ldQSS1xqF0vcahdTTLWJKabaxBRTbWKKpT5iiqU2cQslDrWJW1BC/ROXONSbGGKoV0Gc6ofEpX6IW70IMdVTiC+1CfGtliAe6hSneKghLvFUxC1eNJY/cZwpHVTDrZQAAAAASUVORK5CYII="   # มือตอนกลางคืน (จางกว่า)
 HAND_LOOT_POS = (531, 365)     # รูปมือลอยตำแหน่งนี้เสมอ (เทียบตัวละคร) ใช้กดสำรองเมื่อตรวจไม่เจอ
-ATTACK_TRY_DIST = 70          # ฐานหินห่างจาก 'ตัวละคร (เส้นเท้า->หัว)' ไม่เกินนี้ (px อ้างอิง) = ชิดตัว/ชิดหน้า หยุดเดินแล้วกดตีเลย ไม่หมุนกล้อง
-SLOT1_AT_HP = 0.30            # เลือดเป้าเหลือไม่เกินนี้: กดช่อง 1 (ขวาน) 1 ครั้งแบบช้าๆ แล้วตีปกติต่อ (0 = ปิด)
+ATTACK_TRY_DIST = 20          # ฐานหินห่างจากเส้นตัวละคร (เท้า->หัว) ไม่เกินนี้ = ถึงระดับ 'หัว' ลองกดตีครั้งแรก
+SLOT1_AT_HP = 0.0            # เลือดเป้าเหลือไม่เกินนี้: กดช่อง 1 (ขวาน) 1 ครั้งแบบช้าๆ แล้วตีปกติต่อ (0 = ปิด)
+REACH_LEVELS = (0.70, 0.45, 0.15)   # ระดับระยะตี วัดจากฐานหินตามแนวเท้า(0)->หัว(1): หัว / กลาง / ชิด (ตามภาพที่ผู้ใช้ทำเครื่องหมาย)
+SLOW_HOLD_MS = 450            # เลือดต่ำ: กดปุ่มดาบค้างทีละครั้งช้าๆ
+SLOW_GAP = 0.45
 SLOT1_PRESS_MS = 450          # กดช่อง 1 ค้างกี่ ms (ช้าๆ แต่ไม่ช้ามาก)
 PEEK_EVERY = 4                # เดินตรงทุกกี่ก้าวหันกล้องส่องหินข้างๆ ว่าใกล้กว่าเป้าไหม
 PEEK_MAX = 4                  # ส่องไม่เกินกี่รอบต่อหินหนึ่งก้อน
@@ -2424,12 +2427,19 @@ class RockLoop:
                     nap(0.2)
                     continue
             if rocks:
-                feet = fr.A("char_feet")
-                dx, dy = rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1]
-                dist = math.hypot(dx, dy)
-                ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เข้าไปอีก {dist:.0f}")
-                ms = int(min(1500, max(400, seg_dist(fr, rocks[0]["base"]) * WALK_MS_PER_PX * 0.6)))
-                d.joystick(dx, dy, ms)
+                feet, head = fr.A("char_feet"), fr.A("char_head")
+                span = max(1.0, feet[1] - head[1])
+                tt = (feet[1] - rocks[0]["base"][1]) / span       # ตำแหน่งฐานหินตามตัวละคร 0=เท้า 1=หัว >1=เลยหัว
+                nxt = [lv for lv in REACH_LEVELS if lv < tt - 0.08]
+                if nxt:                                           # เดินตรงเข้าไปทีละระดับ หัว -> กลาง -> ชิด แล้วลองตีใหม่
+                    goal = nxt[0]
+                    ms = int(min(1500, max(250, (tt - goal) * span * WALK_MS_PER_PX)))
+                    ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เดินเข้าระดับ{'หัว' if goal == REACH_LEVELS[0] else ('กลาง' if goal == REACH_LEVELS[1] else 'ชิด')}")
+                    log(f"[ตี] ฐานหิน t={tt:.2f} -> เป้า {goal:.2f} เดิน {ms}ms")
+                    d.joystick(0, -1, ms)
+                else:
+                    ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) หินชิดสุดแล้ว ดันตรงอีกนิด")
+                    d.joystick(0, -1, 250)
             else:
                 ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) ดันตรง")
                 d.joystick(0, -1, 350)                       # หินชิด/บังตัว: ดันไปข้างหน้าอีกนิดแล้วตีใหม่
@@ -2523,7 +2533,11 @@ class RockLoop:
                 ui(f"🔢 เลือดเหลือ ≤{SLOT1_AT_HP * 100:.0f}% → กดช่อง 1 (ช้าๆ 1 ครั้ง)")
                 d.hold(*fr.A("pickaxe_slot"), SLOT1_PRESS_MS)
                 nap(0.3)
-            d.burst(*fr.A("sword"), 1 if bar["hp"] <= SINGLE_TAP_HP else BURST_TAPS)
+            if bar["hp"] <= SINGLE_TAP_HP:                       # เลือดต่ำ: ตีช้าลง ทีละครั้ง กันตีเลยไปโดนก้อนข้างๆ
+                d.hold(*fr.A("sword"), SLOW_HOLD_MS)
+                nap(SLOW_GAP)
+            else:
+                d.burst(*fr.A("sword"), BURST_TAPS)
         ui("⚠️ ตีนานเกินกำหนด")
         return "timeout"
 
