@@ -162,7 +162,7 @@ STOP_FILE = os.path.join(BASE_DIR, "STOP")
 STOP_WORDS = {"q", "quit", "stop", "s", "x", "หยุด"}
 
 
-class Stop(Exception):
+class Stop(BaseException):      # ไม่ใช่ Exception: กัน except Exception ที่ไหนก็ตามกลืนคำสั่งหยุด
     pass
 
 
