@@ -122,7 +122,11 @@ NEAR_DIST = 105               # ระยะ (px อ้างอิง) เท�
 APPROACH_MAX_STEPS = 40
 ENGAGE_TRIES = 8              # ตีไม่โดนเป้ากี่ครั้ง (แต่ละครั้งขยับเข้าใกล้หินมากขึ้น) ก่อนยอมออก
 SEARCH_MAX_ROUNDS = 25
-AFTER_PICK_WAIT = 1.5
+AFTER_PICK_WAIT = 0.8
+BURST_TAPS = 3                # ตีรัว: แตะดาบกี่ครั้งต่อรอบก่อนอ่านเลือด (ขวานไม้ -6 ต่อครั้ง)
+BURST_GAP = 0.30              # เว้นระหว่างแตะ (วินาที)
+BURST_PRESS_MS = 140          # แตะแต่ละครั้งกดค้างกี่ ms
+STALE_CYCLES = 3              # เลือดไม่ลดติดกันกี่รอบ(รอบละ BURST_TAPS ครั้ง) ถึงนับว่าตีไม่เข้า
 GUARD = True                  # ยามเฝ้า: ไม่เห็นปุ่มตี / อ่านพิกัดไม่ได้ ติดกันหลายครั้ง = หยุดทันที (ปิดด้วย run --no-guard)
 GUARD_SWORD_FAILS = 4         # ไม่เห็นปุ่มตีติดกันกี่เฟรมถึงหยุด
 GUARD_COORD_FAILS = 4         # อ่านพิกัดไม่ได้ติดกันกี่ครั้งถึงหยุด
@@ -417,6 +421,17 @@ class Device:
             self._events([(x, y)], ms)
         else:
             self.sh(f"input swipe {x} {y} {x} {y} {int(ms)}", timeout=ms / 1000 + 12)
+
+    def burst(self, xl, yl, n, gap=BURST_GAP, press_ms=BURST_PRESS_MS):
+        """แตะรัว n ครั้งในคำสั่งเดียว (ตีต่อเนื่อง ไม่เสียเวลาเรียกเครื่องทีละครั้ง)"""
+        x, y = self.last.to_touch(xl, yl)
+        if TOUCH_BACKEND["hold"] == "sendevent":
+            for _ in range(n):
+                self.hold(xl, yl, press_ms)
+                nap(gap)
+            return
+        one = f"input swipe {x} {y} {x} {y} {int(press_ms)}"
+        self.sh(f"; sleep {gap}; ".join([one] * n), timeout=n * (press_ms / 1000 + gap) + 12)
 
     def _swipe(self, p1, p2, ms, backend):
         x1, y1 = self.last.to_touch(*p1)
@@ -1177,6 +1192,9 @@ ROCK_ICON_PERIOD = {}          # บังคับช่วงเวลาข�
 HAND_ICON_PATTERNS = ["*hand*", "*มือ*", "*pickup*"]
 HAND_THRESHOLD = 0.6           # คะแนนจับไอคอนมือ (ทดสอบ: เห็นมือ 0.87-1.0 / ไม่เห็น <= 0.51)
 HAND_SCALES = [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0, 1.15]
+COORD_REFS = []                # พิกัดอ้างอิง [ตามตัว, ...]: ใช้ซ่อมเลข OCR ที่เพี้ยน (เช่น 14178 อ่านเป็น 11173)  ตั้งด้วย run --pos X,Y
+COORD_SNAP_R = 400             # ซ่อมเฉพาะเมื่ออยู่ห่างจากอ้างอิงไม่เกินนี้
+POS_REF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pos_ref.json")
 COORD_MAX_JUMP = 120           # พิกัดที่อ่านได้กระโดดเกินนี้จากค่าก่อน ถือว่าอ่านผิด (ยกเว้นยืนยันซ้ำ)
 ROI["coords"] = LAYOUT_ROI["A"]["coords"]
 TIME_LOG = os.path.join(DEBUG_DIR, "time_log.csv")
@@ -1322,6 +1340,51 @@ def _parse_coord(text):
     return None
 
 
+def _ham(a, b):
+    return sum(1 for p, q in zip(a, b) if p != q) + abs(len(a) - len(b))
+
+
+def snap_coords(c, refs=None):
+    """ซ่อมเลขพิกัดที่ OCR อ่านเพี้ยนบางหลัก: หาพิกัดใกล้จุดอ้างอิงที่ตัวเลขต่างจากที่อ่านได้น้อยหลักที่สุด
+    -> ((x, y), จำนวนหลักที่แก้) | (c, None) ถ้าไม่มีอ้างอิง/อ่านต่างเกินไป (เช่น เทเลพอร์ตไปไกล)"""
+    refs = COORD_REFS if refs is None else refs
+    if not c or not refs:
+        return c, None
+    xs, ys, best = f"{c[0]:04d}", f"{c[1]:05d}", None
+    r = COORD_SNAP_R
+    for rx, ry in refs:
+        bx = min((_ham(xs, f"{x:04d}"), abs(x - rx), x) for x in range(max(0, rx - r), rx + r + 1))
+        by = min((_ham(ys, f"{y:05d}"), abs(y - ry), y) for y in range(max(0, ry - r), ry + r + 1))
+        h = bx[0] + by[0]
+        if bx[0] <= 1 and by[0] <= 2 and h <= 3:
+            key = (h, bx[1] + by[1])
+            if best is None or key < best[0]:
+                best = (key, (bx[2], by[2]), h)
+    return (best[1], best[2]) if best else (c, None)
+
+
+def set_coord_ref(pos):
+    COORD_REFS[:] = [tuple(pos), tuple(pos)]
+
+
+def load_pos_ref():
+    try:
+        with open(POS_REF_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        set_coord_ref((int(d["x"]), int(d["y"])))
+    except Exception:
+        pass
+
+
+def save_pos_ref():
+    if COORD_REFS:
+        try:
+            with open(POS_REF_FILE, "w", encoding="utf-8") as f:
+                json.dump({"x": COORD_REFS[0][0], "y": COORD_REFS[0][1]}, f)
+        except Exception:
+            pass
+
+
 def vote_coords(reads):
     """โหวตทีละหลักจากการอ่านหลายรอบ (OCR เพี้ยนบางหลักเป็นครั้งคราว เช่น 14→12) -> (x, y) หรือ None"""
     ok = [r for r in reads if r]
@@ -1339,6 +1402,20 @@ def vote_coords(reads):
 
 
 def read_coords_once(fr):
+    """อ่านพิกัด แล้วซ่อมเลขเพี้ยนด้วยจุดอ้างอิง (ถ้ามี) -> (x, y) หรือ None"""
+    c = _read_coords_raw(fr)
+    if c and COORD_REFS:
+        c2, h = snap_coords(c)
+        if h is not None:
+            if h:
+                log(f"[พิกัด] ซ่อมเลข {c[0]},{c[1]} -> {c2[0]},{c2[1]} ({h} หลัก)")
+            if h <= 2:
+                COORD_REFS[0] = c2                    # จุดอ้างอิงขยับตามตัวละคร
+            return c2
+    return c
+
+
+def _read_coords_raw(fr):
     """อ่านพิกัด 'x, y': (1) อ่านทีละตัวเลขแล้วโหวต (2) ทั้งบรรทัดหลายแบบแล้วโหวต -> (x, y) หรือ None"""
     if not HAS_TESS:
         return None
@@ -1621,11 +1698,14 @@ class RockLoop:
         self.stats = {"ตีสำเร็จ": 0, "เก็บ": 0, "กลับบ้านสำเร็จ": 0, "รอบ": 0}
 
     # ---------------------------------------------------------------- พื้นฐาน
-    def frame(self, guard=True):
+    def frame(self, guard=True, fast=False):
+        """fast=True: ไม่อ่านนาฬิกา/ไม่เช็กยาม (ใช้ตอนตี/เก็บของที่ต้องเร็ว)"""
         fr = self.dev.grab()
         if fr is None:
             raise Stop("จับภาพหน้าจอไม่ได้ (เช็คสิทธิ์รูท / su)")
         self.fr = fr
+        if fast:
+            return fr
         self.names, self.period, self._tstr, self._src = self.clock.current(fr)
         if guard and GUARD:
             self.guard(fr)
@@ -1684,6 +1764,8 @@ class RockLoop:
             c = vote_coords([read_coords_once(fr)] + [read_coords_once(self.frame(guard=False)) for _ in range(2)]) if s_ok else None
             if s_ok and c:
                 ui(f"✅ เห็นปุ่มตี + พิกัด {c[0]},{c[1]}")
+                if not COORD_REFS:
+                    ui("💡 อ่านเลขพิกัดเพี้ยน? ใส่พิกัดจริง: run --pos X,Y (จำไว้ใช้ครั้งต่อไป)")
                 self._tcoord = time.time()
                 return
             why = "ไม่เห็นปุ่มตี (ไม่ได้อยู่ในเกม?)" if not s_ok else "อ่านพิกัดไม่ได้"
@@ -1924,11 +2006,11 @@ class RockLoop:
         return "miss"
 
     def chop_until_empty(self):
-        """ตีต่อเนื่องจนเลือดเป้าหมดแล้ว -> 'empty' | 'gone' (แถบหาย) | 'stuck' (เลือดไม่ลด) | 'timeout'
-        เหนื่อย (แถบข้อความ) = พักรอแล้วตีต่อ เลือดไม่ลดหลายรอบ = ขยับเข้าไปอีกนิด"""
+        """ตีรัวจนเลือดเป้าหมดหมด -> 'empty' | 'gone' (แถบหาย) | 'stuck' (เลือดไม่ลด) | 'timeout'
+        แตะดาบรัว BURST_TAPS ครั้งแล้วค่อยอ่านเลือด (ไม่ใช้นาฬิกา/ยามในลูปนี้ให้เร็ว) เหนื่อย = พักแล้วตีต่อ"""
         d, t0, last_hp, stale, nudges = self.dev, time.time(), None, 0, 0
         while time.time() - t0 < HIT_TIMEOUT:
-            fr = self.frame()
+            fr = self.frame(fast=True)
             if banner_present(fr):
                 ui(f"😮‍💨 เหนื่อย พัก {TIRED_REST_SEC}วิ")
                 nap(TIRED_REST_SEC)
@@ -1940,15 +2022,13 @@ class RockLoop:
             if bar["hp"] <= 0.02:
                 ui("⛏ เลือดหมดแล้ว")
                 return "empty"
-            ui(f"⛏ ตี เลือด {bar['hp'] * 100:.0f}%")
-            d.hold(*fr.A("sword"), HOLD_MS)
-            nap(0.3)
+            ui(f"⛏ ตีรัว เลือด {bar['hp'] * 100:.0f}%")
             if last_hp is not None and bar["hp"] >= last_hp - 0.01:
                 stale += 1
             else:
                 stale = 0
             last_hp = bar["hp"]
-            if stale >= HP_NO_DROP_RETRY:
+            if stale >= STALE_CYCLES:
                 nudges += 1
                 stale = 0
                 if nudges > 3:
@@ -1956,32 +2036,30 @@ class RockLoop:
                     return "stuck"
                 ui("⛏ เลือดไม่ลด ขยับเข้าไปอีกนิด")
                 d.joystick(0, -1, 300)
+            d.burst(*fr.A("sword"), 1 if bar["hp"] <= 0.14 else BURST_TAPS)
         ui("⚠️ ตีนานเกินกำหนด")
         return "timeout"
 
     def collect(self):
-        """เลือดหมดแล้ว: กดปุ่มมือ -> หน้าต่าง Pick All -> กดเก็บทั้งหมด"""
+        """เลือดหมดแล้ว: กดปุ่มมือทันที (ไม่รอตรวจรูปมือ เพราะรูปมือขึ้นเพราะดิน/ทราย/ดอกไม้ได้ด้วย) -> Pick All"""
         d = self.dev
+        hand = self.fr.A("hand_guess")
         for k in range(6):
-            fr = self.frame()
+            d.tap(*hand)
+            if k == 0:
+                ui("🖐 กดปุ่มมือ")
+            nap(0.25)
+            fr = self.frame(fast=True)
             pa = find_pick_all(fr)
             if pa:
                 d.tap(*pa)
                 nap(AFTER_PICK_WAIT)
                 self.stats["เก็บ"] += 1
                 ui("🎒 เก็บของแล้ว (Pick All)")
-                if bag_state(self.frame()) == "full":
+                if bag_state(self.frame(fast=True)) == "full":
                     raise Stop("กระเป๋าเต็ม")
                 return True
-            seen, score = hand_present(fr)
-            log(f"[เก็บ] รูปมือ คะแนน {score:.2f} {'เห็น' if seen else 'ไม่เห็น'}")
-            if seen:
-                ui("🖐 กดปุ่มมือ")
-                d.tap(*fr.A("hand_guess"))
-                nap(1.0)
-                continue
-            nap(0.6)
-        ui("⚠️ ไม่เจอปุ่มมือ/Pick All")
+        ui("⚠️ ไม่เจอ Pick All")
         return False
 
     def leave(self, rock, why):
@@ -2229,6 +2307,7 @@ def main():
     r.add_argument("--max-rounds", type=int, default=0, help="วนกี่รอบแล้วหยุด (0 = ไม่หยุด)")
     r.add_argument("--period", choices=list(PERIODS), help="บังคับช่วงเวลา (ทดสอบ)")
     r.add_argument("--no-countdown", action="store_true")
+    r.add_argument("--pos", help="พิกัดจริงตอนเริ่ม เช่น 6356,14178 (ใช้ซ่อมเลขที่ OCR อ่านเพี้ยน และจำไว้ใน pos_ref.json)")
     r.add_argument("--no-guard", action="store_true", help="ปิดยามเฝ้า (ไม่หยุดเองเมื่อไม่เห็นปุ่มตี/พิกัด)")
     r.add_argument("--verbose", action="store_true", help="แสดงรายละเอียดเต็มบนจอ (ปกติลงไฟล์ debug/bot.log)")
     r.add_argument("--dry", action="store_true", help="ไม่ส่งคำสั่งจริง")
@@ -2262,6 +2341,14 @@ def main():
             pass
     if getattr(args, "layout", None):
         LAYOUT = args.layout
+    if args.cmd in ("run", "doctor"):
+        load_pos_ref()
+        if getattr(args, "pos", None):
+            try:
+                set_coord_ref([int(v) for v in args.pos.replace(" ", "").split(",")][:2])
+                save_pos_ref()
+            except Exception:
+                sys.exit("--pos ต้องเป็นรูปแบบ X,Y เช่น --pos 6356,14178")
     if args.cmd == "run":
         QUIET = not args.verbose
     if args.cmd == "stop":
@@ -2309,6 +2396,7 @@ def main():
     except KeyboardInterrupt:
         ui("⏹ หยุด (Ctrl+C)")
     QUIET = False
+    save_pos_ref()
     ui(f"📊 ตี {bot.stats['ตีสำเร็จ']} │ เก็บ {bot.stats['เก็บ']} │ บ้าน {bot.stats['กลับบ้านสำเร็จ']} │ รอบ {bot.stats['รอบ']}")
     ui("📄 รายละเอียด: debug/bot.log")
 
