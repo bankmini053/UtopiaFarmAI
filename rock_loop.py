@@ -116,6 +116,8 @@ HIT_TIMEOUT = 150             # ตีหินก้อนเดียวไม
 HP_NO_DROP_RETRY = 2          # เลือดไม่ลดกี่รอบติดกัน -> ขยับเข้าไปอีกนิดแล้วกดใหม่
 TIRED_REST_SEC = 12           # รอสแตมิน่าฟื้น
 STEP_MS_MIN, STEP_MS_MAX = 350, 900
+NEAR_TRUST_DIST = 170          # ใช้ 'สีหินรอบตัวเยอะ = ชิดแล้ว' ได้ก็ต่อเมื่อหินที่เห็นอยู่ไม่เกินระยะนี้ (กันนับพื้น/ตัวละครผิด)
+WALK_MS_PER_PX = 18            # เดินเข้าหาหินตอนตีไม่โดน: ms ต่อ px ที่ยังขาด (ตัวละครเดินช้า ~55px/วิ)
 NEAR_DIST = 105               # ระยะ (px อ้างอิง) เท้า->ฐานหิน ที่ลองตีได้
 APPROACH_MAX_STEPS = 40
 ENGAGE_TRIES = 8              # ตีไม่โดนเป้ากี่ครั้ง (แต่ละครั้งขยับเข้าใกล้หินมากขึ้น) ก่อนยอมออก
@@ -1320,6 +1322,22 @@ def _parse_coord(text):
     return None
 
 
+def vote_coords(reads):
+    """โหวตทีละหลักจากการอ่านหลายรอบ (OCR เพี้ยนบางหลักเป็นครั้งคราว เช่น 14→12) -> (x, y) หรือ None"""
+    ok = [r for r in reads if r]
+    if not ok:
+        return None
+    if len(ok) < 3:
+        return ok[0]
+    strs = [f"{x:04d}{y:05d}" for x, y in ok if 1000 <= x <= 9999 and 10000 <= y <= 99999] or [f"{x:04d}{y:05d}" for x, y in ok if 0 <= x <= 9999 and 0 <= y <= 99999]
+    if not strs:
+        return ok[0]
+    n = max(len(t) for t in strs)
+    strs = [t for t in strs if len(t) == n] or strs
+    digs = "".join(Counter(t[i] for t in strs).most_common(1)[0][0] for i in range(len(strs[0])))
+    return int(digs[:4]), int(digs[4:])
+
+
 def read_coords_once(fr):
     """อ่านพิกัด 'x, y': (1) อ่านทีละตัวเลขแล้วโหวต (2) ทั้งบรรทัดหลายแบบแล้วโหวต -> (x, y) หรือ None"""
     if not HAS_TESS:
@@ -1489,7 +1507,7 @@ class Nav:
 
     def read(self, tries=4):
         for _ in range(tries):
-            c = read_coords_once(self.grab())
+            c = vote_coords([read_coords_once(self.grab()) for _ in range(3)])
             if c and (self.last is None or math.hypot(c[0] - self.last[0], c[1] - self.last[1]) <= COORD_MAX_JUMP):
                 self.last = c
                 return c
@@ -1663,7 +1681,7 @@ class RockLoop:
         for k in range(4):
             fr = self.frame(guard=False)
             s_ok, _ = sword_present(fr)
-            c = read_coords_once(fr)
+            c = vote_coords([read_coords_once(fr)] + [read_coords_once(self.frame(guard=False)) for _ in range(2)]) if s_ok else None
             if s_ok and c:
                 ui(f"✅ เห็นปุ่มตี + พิกัด {c[0]},{c[1]}")
                 self._tcoord = time.time()
@@ -1770,6 +1788,8 @@ class RockLoop:
     def near_pixels(self, fr):
         """พื้นที่สีหินรอบตัวละคร (px อ้างอิง) ใช้ดูว่าหินใหญ่จนชิด/บังตัวละครแล้วไหม"""
         m = rock_mask(fr.img, self.names, self.profiles)
+        cx1, cy1, cx2, cy2 = fr.box(CHAR_EXCLUDE)             # ผม/ผิว/กระโปรงตัวละครไม่ใช่หิน
+        m[max(0, cy1):cy2, max(0, cx1):cx2] = 0
         x1, y1, x2, y2 = fr.box(NEAR_BOX)
         sub = cv2.morphologyEx(m[y1:y2, x1:x2], cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         return float((sub > 0).sum()) / (fr.sx * fr.sy)
@@ -1802,7 +1822,7 @@ class RockLoop:
         for step in range(APPROACH_MAX_STEPS):
             fr = self.frame()
             feet = fr.A("char_feet")
-            if step >= 1 and self.near_pixels(fr) >= NEAR_PIX:
+            if step >= 1 and (last_dist is None or last_dist <= NEAR_TRUST_DIST * fr.sy) and self.near_pixels(fr) >= NEAR_PIX:
                 ui("📍 ชิดหินแล้ว")
                 return self._arrived(fr)
             rocks, _ = find_rocks(fr, self.names, self.profiles)
@@ -1894,7 +1914,8 @@ class RockLoop:
                 dx, dy = rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1]
                 dist = math.hypot(dx, dy)
                 ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) เข้าไปอีก {dist:.0f}")
-                d.joystick(dx, dy, int(min(900, max(300, dist * 1.3))))
+                ms = int(min(2500, max(500, (dist - NEAR_DIST * fr.sy) * WALK_MS_PER_PX)))
+                d.joystick(dx, dy, ms)
             else:
                 ui(f"⚔️ ตียังไม่โดน ({t + 1}/{ENGAGE_TRIES}) ดันตรง")
                 d.joystick(0, -1, 350)                       # หินชิด/บังตัว: ดันไปข้างหน้าอีกนิดแล้วตีใหม่
