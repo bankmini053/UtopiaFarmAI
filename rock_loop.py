@@ -20,7 +20,10 @@ rock_loop.py - บอทวนทดสอบ: จุดมองหา -> ห�
   python rock_loop.py run --max-rounds 3        # วนแค่ 3 รอบแล้วหยุด
   python rock_loop.py calibrate                 # จับภาพ 1 เฟรม -> debug/calibrate.png + พิมพ์สิ่งที่บอทอ่านได้
   python rock_loop.py calibrate --image ภาพ.png --landscape
-  python rock_loop.py test-input joystick|hold|camera
+  python rock_loop.py test-input joystick|hold|camera [--backend input|sendevent]
+  python rock_loop.py camera-cal                # วัดว่ากล้องหมุนไหม/ทิศไหน แล้วเซฟค่าไว้ใช้
+  python rock_loop.py doctor                    # ตรวจ root/tesseract/จับภาพ/อ่านเวลา-พิกัด-ชื่อ
+  python rock_loop.py stop                      # สั่งหยุดบอทที่รันอยู่ (หรือกด q + Enter / Ctrl+C ที่หน้าต่างบอท)
 """
 import argparse
 import difflib
@@ -29,8 +32,11 @@ import json
 import math
 import os
 import random
+import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter
 
@@ -39,7 +45,7 @@ import numpy as np
 
 try:
     import pytesseract
-    HAS_TESS = True
+    HAS_TESS = shutil.which("tesseract") is not None      # ต้องมีโปรแกรม tesseract จริง ไม่ใช่แค่ pytesseract
 except Exception:          # ยังไม่ได้ลง pytesseract/tesseract: บอททำงานได้ แต่อ่านชื่อ/นาฬิกาไม่ได้
     pytesseract = None
     HAS_TESS = False
@@ -99,12 +105,12 @@ SHELL_PREFIX = ["su", "-c"]            # ไม่ได้รูท: ["sh", "-c
 TOUCH_BACKEND = {
     "hold": "input",                   # กดค้างดาบ: "input" | "sendevent"
     "joystick": "input",
-    "camera": "none",                  # "none" = ไม่หมุนกล้อง ใช้จอยเดินหาแทน | "input" | "sendevent"
+    "camera": "input",                 # "input" | "sendevent" | "none" = ไม่หมุนกล้อง ใช้จอยเดินหาแทน
 }
 TOUCH_EVENT_DEVICE = "/dev/input/event0"   # อุปกรณ์สัมผัสของเครื่องนี้ (จาก getevent)
 
 # จังหวะ/เกณฑ์
-HOLD_MS = 2500                # กดค้างดาบครั้งละ
+HOLD_MS = 1200                # กดค้างดาบครั้งละ
 HIT_TIMEOUT = 150             # ตีหินก้อนเดียวไม่เกินกี่วินาที
 HP_NO_DROP_RETRY = 2          # เลือดไม่ลดกี่รอบติดกัน -> ขยับเข้าไปอีกนิดแล้วกดใหม่
 TIRED_REST_SEC = 12           # รอสแตมิน่าฟื้น
@@ -120,6 +126,24 @@ BAG_FULL_RATIO = 0.25         # สัดส่วนสีเหลือง/�
 REPAIR_MAX_FAILS = 3
 COUNTDOWN_SEC = 10
 
+# กล้อง: ลากนิ้วที่ camera_start ไปซ้าย/ขวา (จอแนวนอน) ระบบวัดเองว่าลาก 1px แล้วฉากขยับกี่px (มีเครื่องหมาย)
+CAM_DRAG_PX = 260             # ระยะลากต่อครั้งตอนกวาด
+CAM_DRAG_MS = 380
+CAM_SWEEP_STEPS = 14          # กวาดซ้ายกี่ครั้งต่อ 1 รอบการมองหา
+CAM_CENTER_BAND = 85          # หินอยู่ห่างกลางจอไม่เกินนี้ (px อ้างอิง) = 'อยู่กลาง' เดินตรงได้
+CAM_ALIGN_MAX = 4             # หมุนปรับเข้าหาหินไม่เกินกี่ครั้งต่อก้าว
+CAM_MAX_SHIFT = 260           # ฉากขยับต่อครั้งไม่เกินนี้ (px) กันวัดสลับรอบ (ROI กว้าง ~750)
+CAM_MIN_SHIFT = 6.0           # ฉากต้องขยับอย่างน้อยกี่px ถึงนับว่ากล้องหมุน
+CAM_FILE = os.path.join(DEBUG_DIR, "camera_cal.json")
+CAM_SCENE_ROI = (250, 70, 1000, 290)     # ส่วนฉากไกล (ท้องฟ้า/ต้นไม้) ใช้วัดการหมุน ไม่โดน UI/ตัวละคร
+
+# เลย์เอาต์ HUD: "A" = นาฬิกา/พิกัดมุมซ้ายบน (เครื่อง cloud ที่ทดสอบ)  "B" = นาฬิกาขวาบนข้างมินิแมพ + พิกัดใต้มินิแมพ (เครื่องจริง)  "auto" = ลองทั้งคู่
+LAYOUT = "auto"
+LAYOUT_ROI = {
+    "A": {"clock": (0, 4, 64, 32), "coords": (40, 246, 290, 276)},
+    "B": {"clock": (835, 2, 975, 44), "coords": (955, 118, 1150, 160)},
+}
+
 # โปรไฟล์สีหินสำรอง (ถ้าไม่มีโฟลเดอร์ templates/rocks จะใช้ชุดนี้)
 # ถ้ามีรูปใน templates/rocks/<dawn|day|night>/ บอทจะสร้างโปรไฟล์ใหม่จากรูปเองทุกครั้งที่เริ่ม
 DEFAULT_PROFILES = {
@@ -132,8 +156,87 @@ DAY_MIN = 24 * 60
 DEBUG = False
 
 
+_real_sleep = time.sleep
+STOP_FLAG = threading.Event()
+STOP_FILE = os.path.join(BASE_DIR, "STOP")
+STOP_WORDS = {"q", "quit", "stop", "s", "x", "หยุด"}
+
+
+class Stop(Exception):
+    pass
+
+
 def log(msg):
-    print(time.strftime("%H:%M:%S"), msg, flush=True)
+    """พิมพ์ชิดซ้ายทุกบรรทัด (ใส่ \\r กันบรรทัดเลื่อนขวาเมื่อ tty เพี้ยน)"""
+    text = str(msg).lstrip(" ")
+    sys.stdout.write(f"\r{time.strftime('%H:%M:%S')}  {text}\n")
+    sys.stdout.flush()
+
+
+def stop_requested():
+    if STOP_FLAG.is_set():
+        return True
+    if os.path.exists(STOP_FILE):
+        STOP_FLAG.set()
+        return True
+    return False
+
+
+def check_stop():
+    if stop_requested():
+        raise Stop("ผู้ใช้สั่งหยุด")
+
+
+def nap(sec):
+    """sleep ที่ถูกขัดจังหวะได้ทันทีเมื่อสั่งหยุด"""
+    end = time.time() + sec
+    while True:
+        check_stop()
+        left = end - time.time()
+        if left <= 0:
+            return
+        _real_sleep(min(0.1, left))
+
+
+def install_stop_handlers():
+    """หยุดได้ตลอด: Ctrl+C / พิมพ์ q แล้ว Enter / สร้างไฟล์ STOP (คำสั่ง `stop`) / SIGTERM"""
+    try:
+        os.remove(STOP_FILE)
+    except OSError:
+        pass
+    STOP_FLAG.clear()
+    hits = {"n": 0}
+
+    def on_sig(signum, frame):
+        hits["n"] += 1
+        STOP_FLAG.set()
+        if hits["n"] >= 2:
+            sys.stdout.write("\r\nบังคับออก\r\n")
+            os._exit(130)
+        log("[หยุด] รับคำสั่งหยุดแล้ว กำลังหยุดทันที... (กด Ctrl+C อีกครั้งเพื่อบังคับออก)")
+
+    for sg in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sg, on_sig)
+        except Exception:
+            pass
+
+    def reader():
+        while not STOP_FLAG.is_set():
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                return
+            if not line:
+                return
+            if line.strip().lower() in STOP_WORDS:
+                STOP_FLAG.set()
+                log("[หยุด] ได้รับ q -> หยุด")
+                return
+
+    if sys.stdin is not None and sys.stdin.isatty():
+        threading.Thread(target=reader, daemon=True).start()
+    log("หยุดได้ทุกเมื่อ: กด Ctrl+C  |  พิมพ์ q แล้ว Enter  |  หรือเปิดอีกหน้าต่างพิมพ์ python rock_loop.py stop")
 
 
 # =============================================================================
@@ -188,8 +291,25 @@ class Device:
         if self.dry:
             log(f"[dry] {cmd}")
             return b"" if binary else ""
-        p = subprocess.run(SHELL_PREFIX + [cmd], capture_output=True, timeout=timeout)
-        return p.stdout if binary else p.stdout.decode("utf-8", "ignore")
+        check_stop()
+        p = subprocess.Popen(SHELL_PREFIX + [cmd], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+        out = {}
+        th = threading.Thread(target=lambda: out.update(r=p.communicate()), daemon=True)
+        th.start()
+        t0 = time.time()
+        while th.is_alive():
+            if stop_requested() or time.time() - t0 > timeout:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                th.join(1.0)
+                check_stop()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            th.join(0.05)
+        stdout = out.get("r", (b"", b""))[0] or b""
+        return stdout if binary else stdout.decode("utf-8", "ignore")
 
     def root_ok(self):
         out = self.sh("id")
@@ -408,6 +528,104 @@ def visual_period(img):
     return "day" if max(b, g, r) >= 112 else "dawn"
 
 
+# =============================================================================
+# OCR ที่ไม่ขึ้นกับพื้นหลัง: white top-hat (เก็บเฉพาะ "เส้นขาวบางๆ" ตัดท้องฟ้า/เมฆ/พื้นหลังสว่างทิ้ง)
+# =============================================================================
+_LAST_LAYOUT = [None]
+
+
+def layouts_to_try():
+    order = ["A", "B"] if LAYOUT == "auto" else [LAYOUT]
+    if _LAST_LAYOUT[0] in order:
+        order.remove(_LAST_LAYOUT[0])
+        order.insert(0, _LAST_LAYOUT[0])
+    return order
+
+
+def tophat_mask(roi, sc=4, ks=17, blur=True):
+    """-> ภาพขาวดำ (ตัวหนังสือ=ขาว) ขยาย sc เท่า"""
+    g = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gb = cv2.resize(g, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+    k = int(ks * sc / 6) | 1
+    th = cv2.morphologyEx(gb, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    if blur:
+        th = cv2.GaussianBlur(th, (3, 3), 0)
+    _, b = cv2.threshold(th, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return b
+
+
+def tess(img_black_on_white, whitelist, psm=7):
+    if not HAS_TESS:
+        return ""
+    v = cv2.copyMakeBorder(img_black_on_white, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=255)
+    try:
+        return pytesseract.image_to_string(v, config=f"--psm {psm} -c tessedit_char_whitelist={whitelist}").strip()
+    except Exception:
+        return ""
+
+
+def segment_glyphs(mask):
+    """แยกตัวอักษรตามคอลัมน์ -> [[x0,x1,y0,y1],...] ตัดจุด/ลูกน้ำ (เตี้ย) ทิ้ง"""
+    H, W = mask.shape
+    col = (mask > 0).sum(axis=0)
+    runs, x = [], 0
+    while x < W:
+        if col[x] > 0:
+            x0 = x
+            while x < W and col[x] > 0:
+                x += 1
+            runs.append([x0, x])
+        else:
+            x += 1
+    out = []
+    for x0, x1 in runs:
+        ys = np.where(mask[:, x0:x1].any(axis=1))[0]
+        if len(ys):
+            out.append([x0, x1, int(ys.min()), int(ys.max()) + 1])
+    if not out:
+        return []
+    hmax = max(o[3] - o[2] for o in out)
+    keep = [o for o in out if (o[3] - o[2]) >= 0.62 * hmax and (o[1] - o[0]) >= 0.10 * hmax]
+    res = []
+    for x0, x1, y0, y1 in keep:
+        w, h = x1 - x0, y1 - y0
+        if w > 1.15 * h:                      # ตัวเลขสองตัวติดกัน -> ตัดตรงจุดที่บางสุดกลางๆ
+            seg = (mask[:, x0:x1] > 0).sum(axis=0).astype(float)
+            lo, hi = int(0.35 * w), int(0.65 * w)
+            cut = x0 + lo + int(np.argmin(seg[lo:hi]))
+            res += [[x0, cut, y0, y1], [cut, x1, y0, y1]]
+        else:
+            res.append([x0, x1, y0, y1])
+    return res
+
+
+def read_digits_by_glyph(roi, kernels=(15, 17, 21)):
+    """อ่านทีละตัวเลข (tesseract psm 10) หลายขนาดเคอร์เนล แล้วโหวตรายหลัก -> (x, y) หรือ None
+    ใช้เมื่อแบ่งได้ 9 ตัวพอดี (xxxx,yyyyy) ตำแหน่งลูกน้ำ = ช่องว่างกว้างสุด"""
+    votes, boxes_ref = None, None
+    for ks in kernels:
+        m = tophat_mask(roi, 4, ks)
+        gl = segment_glyphs(m)
+        if len(gl) != 9:
+            continue
+        if votes is None:
+            votes = [Counter() for _ in gl]
+            gaps = [gl[i + 1][0] - gl[i][1] for i in range(8)]
+            boxes_ref = int(np.argmax(gaps)) + 1
+        for i, (x0, x1, y0, y1) in enumerate(gl):
+            g = 255 - m[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2]
+            t = tess(g, "0123456789", psm=10)
+            if t[:1].isdigit():
+                votes[i][t[0]] += 1
+    if votes is None or any(not v for v in votes):
+        return None
+    d = "".join(v.most_common(1)[0][0] for v in votes)
+    k = boxes_ref
+    if not (3 <= k <= 5):
+        k = 4
+    return int(d[:k]), int(d[k:])
+
+
 class ClockReader:
     """อ่านเวลาในเกม: OCR หลายแบบ+โหวต -> กรองความสมเหตุสมผล -> เดินนาฬิกาเองด้วยอัตราที่วัดได้ -> สำรอง: ดูแสงฉาก"""
 
@@ -419,30 +637,36 @@ class ClockReader:
 
     @staticmethod
     def _variants(roi):
+        """สร้างภาพให้ tesseract ทีละแบบ (top-hat ก่อน ทนพื้นหลังท้องฟ้า แล้วค่อยแบบเดิมสำหรับพื้นหลังเข้ม)"""
+        for ks in (17, 13, 21):
+            for bl in (True, False):
+                yield 255 - tophat_mask(roi, 5, ks, bl)
         g = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
         _, o = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         a = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, -8)
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        w = cv2.resize(cv2.inRange(hsv, (0, 0, 170), (180, 90, 255)), None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
-        _, w = cv2.threshold(cv2.GaussianBlur(w, (5, 5), 0), 127, 255, cv2.THRESH_BINARY)
-        return [255 - o, o, 255 - a, 255 - w]
+        yield 255 - o
+        yield o
+        yield 255 - a
 
     def _ocr(self, fr):
         if not HAS_TESS:
             return []
-        roi = fr.crop("clock")
-        if roi.size == 0:
-            return []
         out = []
-        for v in self._variants(roi):
-            v = cv2.copyMakeBorder(v, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=255)
-            try:
-                t = pytesseract.image_to_string(v, config="--psm 7 -c tessedit_char_whitelist=0123456789:")
-            except Exception:
+        for lay in layouts_to_try():
+            roi = fr.crop(LAYOUT_ROI[lay]["clock"])
+            if roi.size == 0:
                 continue
-            d = "".join(c for c in t if c.isdigit())
-            if len(d) == 4 and int(d[:2]) < 24 and int(d[2:]) < 60:
-                out.append(int(d[:2]) * 60 + int(d[2:]))
+            got = []
+            for v in self._variants(roi):
+                d = "".join(c for c in tess(v, "0123456789:") if c.isdigit())
+                if len(d) == 4 and int(d[:2]) < 24 and int(d[2:]) < 60:
+                    got.append(int(d[:2]) * 60 + int(d[2:]))
+                    if Counter(got).most_common(1)[0][1] >= 3:
+                        break
+            if got and Counter(got).most_common(1)[0][1] >= 2:
+                _LAST_LAYOUT[0] = lay
+                return got
+            out += got
         return out
 
     def _consistent(self, cand, now):
@@ -603,9 +827,14 @@ def read_target_name(fr, bar):
         return ""
     g = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
     texts = []
+    imgs = []
     for inv in (False, True):
         _, t = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        t = cv2.copyMakeBorder(255 - t if inv else t, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
+        imgs.append(255 - t if inv else t)
+    for ks in (17, 25):                                   # ตัวหนังสือขาวบนแถบ: top-hat ทนพื้นหลังทุกแบบ
+        imgs.append(255 - tophat_mask(roi, 3, ks, True))
+    for t in imgs:
+        t = cv2.copyMakeBorder(t, 15, 15, 15, 15, cv2.BORDER_CONSTANT, value=255)
         try:
             texts.append(pytesseract.image_to_string(t, config="--psm 7").strip().lower())
         except Exception:
@@ -708,8 +937,8 @@ def bag_state(fr):
 # =============================================================================
 # CONFIG ของบอทวนทดสอบ (ใส่พิกัดที่นี่)
 # =============================================================================
-SEARCH_COORD = (6372, 14133)            # (x, y) พิกัดจุดมองหาหิน   เช่น (6345, 14165)   None = ใช้ตำแหน่งตอนเริ่มเป็นจุดมองหา
-BOX_COORD = (6337, 14140)               # (x, y) พิกัดกล่อง(บ้าน)   เช่น (6300, 14100)   None = ข้ามขั้นตอนไปกล่อง
+SEARCH_COORD = None            # (x, y) พิกัดจุดมองหาหิน   เช่น (6345, 14165)   None = ใช้ตำแหน่งตอนเริ่มเป็นจุดมองหา
+BOX_COORD = None               # (x, y) พิกัดกล่อง(บ้าน)   เช่น (6300, 14100)   None = ข้ามขั้นตอนไปกล่อง
 GOTO_TOL = 5                   # ถึงพิกัดเมื่อห่างไม่เกินกี่หน่วย
 BOX_TOL = 4
 GOTO_MAX_STEPS = 60
@@ -728,7 +957,7 @@ HAND_ICON_PATTERNS = ["*hand*", "*มือ*", "*pickup*"]
 HAND_THRESHOLD = 0.6           # คะแนนจับไอคอนมือ (ทดสอบ: เห็นมือ 0.87-1.0 / ไม่เห็น <= 0.51)
 HAND_SCALES = [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0, 1.15]
 COORD_MAX_JUMP = 120           # พิกัดที่อ่านได้กระโดดเกินนี้จากค่าก่อน ถือว่าอ่านผิด (ยกเว้นยืนยันซ้ำ)
-ROI["coords"] = (40, 240, 290, 292)
+ROI["coords"] = LAYOUT_ROI["A"]["coords"]
 TIME_LOG = os.path.join(DEBUG_DIR, "time_log.csv")
 
 
@@ -851,18 +1080,19 @@ def hand_present(fr):
 # พิกัดบนจอ (OCR) + เดินไปตามพิกัด
 # =============================================================================
 def _coord_variants(roi):
+    for ks in (17, 21, 13):
+        yield 255 - tophat_mask(roi, 4, ks, True)
     g = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
     _, o = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    a = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, -10)
-    w = cv2.resize(cv2.inRange(cv2.cvtColor(roi, cv2.COLOR_BGR2HSV), (0, 0, 185), (180, 70, 255)),
-                   None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-    _, w = cv2.threshold(cv2.GaussianBlur(w, (5, 5), 0), 127, 255, cv2.THRESH_BINARY)
-    return [255 - o, o, 255 - a, 255 - w]
+    yield 255 - o
+    yield o
 
 
 def _parse_coord(text):
     import re
     m = re.findall(r"\d+", text)
+    if len(m) >= 3:
+        m = m[-2:]                      # เลย์เอาต์ B มีเลขเกาะ/โซนนำหน้า เอาสองกลุ่มท้าย
     if len(m) >= 2 and 3 <= len(m[0]) <= 5 and 4 <= len(m[1]) <= 6:
         return int(m[0]), int(m[1])
     d = "".join(m)
@@ -872,26 +1102,141 @@ def _parse_coord(text):
 
 
 def read_coords_once(fr):
-    """อ่านพิกัด 'x, y' ใต้ชื่อโซนด้วยหลายแบบ + โหวต -> (x, y) หรือ None"""
+    """อ่านพิกัด 'x, y': (1) อ่านทีละตัวเลขแล้วโหวต (2) ทั้งบรรทัดหลายแบบแล้วโหวต -> (x, y) หรือ None"""
     if not HAS_TESS:
         return None
-    roi = fr.crop("coords")
-    if roi.size == 0:
-        return None
-    votes = []
-    for v in _coord_variants(roi):
-        v = cv2.copyMakeBorder(v, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
-        try:
-            t = pytesseract.image_to_string(v, config="--psm 7 -c tessedit_char_whitelist=0123456789,. ")
-        except Exception:
+    for lay in layouts_to_try():
+        roi = fr.crop(LAYOUT_ROI[lay]["coords"])
+        if roi.size == 0:
             continue
-        c = _parse_coord(t)
+        c = read_digits_by_glyph(roi)
         if c:
-            votes.append(c)
-    if not votes:
-        return None
-    best, n = Counter(votes).most_common(1)[0]
-    return best if n >= 2 else (best if len(set(votes)) == 1 else None)
+            _LAST_LAYOUT[0] = lay
+            return c
+        votes = []
+        for v in _coord_variants(roi):
+            c = _parse_coord(tess(v, "0123456789,. "))
+            if c:
+                votes.append(c)
+        if votes:
+            best, n = Counter(votes).most_common(1)[0]
+            if n >= 2 or len(set(votes)) == 1:
+                _LAST_LAYOUT[0] = lay
+                return best
+    return None
+
+
+# =============================================================================
+# กล้อง: วัดการหมุนจากการขยับของฉาก (phase correlation) แล้วควบคุมแบบวงปิด
+# =============================================================================
+def scene_gray(fr):
+    x1, y1, x2, y2 = fr.box(CAM_SCENE_ROI)
+    g = cv2.cvtColor(fr.img[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    return cv2.GaussianBlur(g, (5, 5), 0).astype(np.float32)
+
+
+def scene_shift(a, b):
+    """ฉากใน b ขยับไปทางขวากี่ px เทียบกับ a (บวก = เนื้อฉากเลื่อนขวา = กล้องหันซ้าย) -> (shift, ความมั่นใจ)"""
+    win = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+    (dx, _), resp = cv2.phaseCorrelate(a, b, win)
+    return float(dx), float(resp)
+
+
+class Camera:
+    """ratio = ฉากขยับกี่ px ต่อการลากนิ้ว 1 px (มีเครื่องหมาย วัดจริง ไม่ต้องเดาทิศ)"""
+
+    def __init__(self, dev):
+        self.dev = dev
+        self.ratio = None
+        self.ok = False
+
+    def _snap(self):
+        fr = self.dev.grab()
+        if fr is None:
+            raise Stop("จับภาพหน้าจอไม่ได้ (เช็คสิทธิ์รูท / su)")
+        return fr
+
+    def drag(self, dx):
+        """ลากกล้อง dx px (ภาพแนวนอน) -> ฉากขยับกี่ px (วัดจริง)"""
+        a = scene_gray(self._snap())
+        self.dev.camera_drag(dx, 0, CAM_DRAG_MS)
+        nap(0.35)
+        sh, resp = scene_shift(a, scene_gray(self._snap()))
+        return sh, resp
+
+    def try_calibrate(self, verbose=True):
+        """ลากซ้าย-ขวาเล็กๆ วัดว่าฉากขยับไหม ทิศไหน -> True เมื่อใช้งานได้"""
+        rs = []
+        for d in (-140, 140, -140):
+            sh, resp = self.drag(d)
+            if verbose:
+                log(f"[กล้อง] ลาก {d:+d}px -> ฉากขยับ {sh:+.1f}px (ความมั่นใจ {resp:.2f})")
+            if abs(sh) >= CAM_MIN_SHIFT:
+                rs.append(sh / d)
+        pos, neg = [r for r in rs if r > 0], [r for r in rs if r < 0]
+        if len(rs) >= 2 and (not pos or not neg):
+            self.ratio = float(np.median(rs))
+            self.ok = True
+            return True
+        return False
+
+    def calibrate(self, backends=None):
+        """ลองหลายวิธีสั่งลาก (input/sendevent, ช้า/เร็ว) จนกว่ากล้องจะขยับ แล้วจำค่าที่ใช้ได้"""
+        global CAM_DRAG_MS
+        combos = backends or [("input", 380), ("input", 700), ("sendevent", 600), ("input", 200)]
+        for be, ms in combos:
+            TOUCH_BACKEND["camera"] = be
+            CAM_DRAG_MS = ms
+            log(f"[กล้อง] ลองวิธี {be} ลาก {ms}ms")
+            if self.try_calibrate():
+                log(f"[กล้อง] ✅ กล้องหมุนได้ ({be}, {ms}ms) ลาก 100px -> ฉากขยับ {self.ratio * 100:+.0f}px")
+                self.save()
+                return True
+        log("[กล้อง] ❌ กล้องไม่ขยับทุกวิธี -> บอทจะหามองหินด้วยการเดินแทน (ดู README หัวข้อกล้อง / ใช้ test-input camera)")
+        TOUCH_BACKEND["camera"] = "none"
+        self.ok = False
+        return False
+
+    def save(self):
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        with open(CAM_FILE, "w") as f:
+            json.dump({"backend": TOUCH_BACKEND["camera"], "ms": CAM_DRAG_MS, "ratio": self.ratio}, f)
+
+    def load(self):
+        global CAM_DRAG_MS
+        try:
+            d = json.load(open(CAM_FILE))
+            TOUCH_BACKEND["camera"], CAM_DRAG_MS, self.ratio = d["backend"], d["ms"], d["ratio"]
+            self.ok = abs(self.ratio) > 1e-3 and TOUCH_BACKEND["camera"] != "none"
+            return self.ok
+        except Exception:
+            return False
+
+    def ensure(self):
+        if getattr(self.dev, "dry", False):
+            return False
+        if self.load():
+            log(f"[กล้อง] ใช้ค่าที่วัดไว้ ({TOUCH_BACKEND['camera']}, {CAM_DRAG_MS}ms, อัตรา {self.ratio:+.2f})")
+            return True
+        return self.calibrate()
+
+    def sweep_left(self):
+        """หมุนกล้องไปทางซ้าย 1 ก้าว (ฉากเลื่อนไปทางขวา)"""
+        d = math.copysign(min(CAM_DRAG_PX, CAM_MAX_SHIFT / abs(self.ratio)), self.ratio)
+        sh, _ = self.drag(d)
+        if abs(sh) < CAM_MIN_SHIFT:
+            log("[กล้อง] ลากแล้วฉากไม่ขยับ")
+        return sh
+
+    def turn_by(self, shift_px):
+        """หมุนให้ฉากขยับ shift_px (บวก = กล้องหันซ้าย / ลบ = หันขวา) -> ฉากขยับจริงกี่ px"""
+        shift_px = max(-CAM_MAX_SHIFT, min(CAM_MAX_SHIFT, shift_px))
+        d = shift_px / self.ratio
+        d = max(-CAM_DRAG_PX, min(CAM_DRAG_PX, d))
+        if abs(d) < 12:
+            d = math.copysign(12, d)
+        sh, _ = self.drag(d)
+        return sh
 
 
 class Nav:
@@ -915,19 +1260,19 @@ class Nav:
             if c and (self.last is None or math.hypot(c[0] - self.last[0], c[1] - self.last[1]) <= COORD_MAX_JUMP):
                 self.last = c
                 return c
-            time.sleep(0.4)
+            nap(0.4)
         return None
 
     def read_stable(self, timeout=5.0):
         """พิกัดบนจอดีเล: อ่านซ้ำจนสองครั้งติดกันเท่ากัน"""
         t0, prev = time.time(), None
-        time.sleep(COORD_SETTLE)
+        nap(COORD_SETTLE)
         while time.time() - t0 < timeout:
             c = self.read(tries=2)
             if c and c == prev:
                 return c
             prev = c or prev
-            time.sleep(0.5)
+            nap(0.5)
         return prev
 
     def calibrate(self):
@@ -1003,10 +1348,6 @@ def log_time_row(row):
         f.write(",".join(str(x) for x in row) + "\n")
 
 
-class Stop(Exception):
-    pass
-
-
 # =============================================================================
 # ตัวบอทวน
 # =============================================================================
@@ -1016,6 +1357,7 @@ class RockLoop:
         self.clock = ClockReader()
         self.clock.override = period_override
         self.nav = Nav(dev)
+        self.cam = Camera(dev)
         self.fr = None
         self.names, self.period, self._tstr, self._src = ["day"], "day", "--:--", "none"
         self.black = []
@@ -1075,7 +1417,7 @@ class RockLoop:
                 self.report_time("กลับบ้านสำเร็จ")
                 return True
             self.dev.joystick(random.uniform(-1, 1), random.uniform(-1, 1), 450)
-            time.sleep(0.8)
+            nap(0.8)
         log("[กล่อง] ถึงพิกัดกล่องแล้วแต่ไม่เห็นรูปมือ -> เช็คพิกัดกล่อง หรือ HAND_THRESHOLD/ตำแหน่ง hand_guess (ใช้ calibrate)")
         self.report_time("กลับบ้านไม่สำเร็จ")
         return False
@@ -1087,19 +1429,25 @@ class RockLoop:
             self.wander_left = random.randint(2, 3)
         self.wander_left -= 1
         self.dev.joystick(math.sin(self.wander_ang), -math.cos(self.wander_ang), 800)
-        time.sleep(0.3)
+        nap(0.3)
 
     def find_target(self):
-        """ยืนมองจากจุดนี้: เจอหินก็คืนก้อนที่ใกล้สุด ไม่เจอเดินสุ่มสั้นๆ แล้วมองใหม่"""
+        """ยืนมองจากจุดนี้: หมุนกล้องกวาดไปทางซ้ายหาหิน เจอแล้วคืนก้อนที่ใกล้สุด ไม่เจอเดินสุ่มสั้นๆ แล้วกวาดใหม่"""
         for rnd in range(ROCKS_PER_VISIT):
-            fr = self.frame()
-            rocks, _ = find_rocks(fr, self.names, self.profiles)
-            rocks = [r for r in rocks if not self.blacklisted(r)]
-            self.report_time(f"มองหาหิน รอบ{rnd + 1} เจอ{len(rocks)}")
-            if rocks:
-                log(f"[หา] เจอหิน {len(rocks)} ก้อน ใกล้สุดฐาน={rocks[0]['base']}")
-                return rocks[0]
-            log(f"[หา] ไม่เจอหิน ({rnd + 1}/{ROCKS_PER_VISIT}) -> เดินสุ่มแล้วมองใหม่")
+            steps = CAM_SWEEP_STEPS if self.cam.ok else 1
+            for k in range(steps):
+                fr = self.frame()
+                rocks, _ = find_rocks(fr, self.names, self.profiles)
+                rocks = [r for r in rocks if not self.blacklisted(r)]
+                if k == 0:
+                    self.report_time(f"มองหาหิน รอบ{rnd + 1} เจอ{len(rocks)}")
+                if rocks:
+                    log(f"[หา] เจอหิน {len(rocks)} ก้อน ใกล้สุดฐาน={rocks[0]['base']}")
+                    return rocks[0]
+                if self.cam.ok:
+                    log(f"[กล้อง] ไม่เจอหิน -> หมุนกล้องไปทางซ้าย ({k + 1}/{steps})")
+                    self.cam.sweep_left()
+            log(f"[หา] ไม่เจอหิน ({rnd + 1}/{ROCKS_PER_VISIT}) -> เดินสุ่มแล้วกวาดกล้องใหม่")
             self.explore()
             if self.search_pt and self.nav.last:      # กันเดินไกลจากจุดมองหาเกินไป
                 c = read_coords_once(self.dev.grab())
@@ -1131,10 +1479,33 @@ class RockLoop:
                 log(f"[เดิน] ชิดตัวละครแล้ว (ห่าง {dist:.0f}px)")
                 return tgt
             ms = int(min(STEP_MS_MAX, max(STEP_MS_MIN, dist * 1.6)))
-            log(f"[เดิน] ก้าว {step + 1}: dx={dx:+.0f} dy={dy:+.0f} ห่าง {dist:.0f}px นาน {ms}ms")
+            cx = tgt["bbox"][0] + tgt["bbox"][2] / 2.0
+            off = cx - feet[0]                                   # + = หินอยู่ขวาของกลางจอ
+            band = CAM_CENTER_BAND * fr.sx
+            side = "ซ้าย" if off < -band else ("ขวา" if off > band else "กลาง")
+            if self.cam.ok:
+                log(f"[เดิน] ก้าว {step + 1}: หินอยู่ด้าน{side} (เยื้อง {off:+.0f}px) ห่าง {dist:.0f}px")
+                if side != "กลาง":
+                    log(f"[กล้อง] หมุนกล้องไปทาง{side} เข้าหาหิน")
+                    for _ in range(CAM_ALIGN_MAX):
+                        self.cam.turn_by(-off)
+                        fr = self.frame()
+                        rr, _ = find_rocks(fr, self.names, self.profiles)
+                        near = [r for r in rr if math.hypot(r["base"][0] - last[0], r["base"][1] - last[1]) < 260 * fr.sx]
+                        if not near:
+                            break
+                        last = near[0]["base"]
+                        off = near[0]["bbox"][0] + near[0]["bbox"][2] / 2.0 - fr.A("char_feet")[0]
+                        if abs(off) <= band:
+                            break
+                    continue
+                log(f"[เดิน] หินอยู่กลางจอ -> เดินตรงไป {ms}ms")
+                dx, dy = 0.0, -1.0
+            else:
+                log(f"[เดิน] ก้าว {step + 1}: dx={dx:+.0f} dy={dy:+.0f} ห่าง {dist:.0f}px นาน {ms}ms (กล้องไม่หมุน ใช้จอยทิศตรง)")
             before = fr.img
             d.joystick(dx, dy, ms)
-            time.sleep(0.15)
+            nap(0.15)
             fr2 = d.grab()
             if fr2 is not None and frame_diff(before, fr2.img) < STUCK_FRAME_DIFF:
                 stuck += 1
@@ -1150,7 +1521,7 @@ class RockLoop:
         for t in range(ENGAGE_TRIES):
             fr = self.frame()
             d.hold(*fr.A("sword"), 1000)
-            time.sleep(0.4)
+            nap(0.4)
             fr = self.frame()
             bar = read_target_bar(fr)
             if bar["engaged"]:
@@ -1163,7 +1534,7 @@ class RockLoop:
             if rocks:
                 feet = fr.A("char_feet")
                 d.joystick(rocks[0]["base"][0] - feet[0], rocks[0]["base"][1] - feet[1], 300)
-            time.sleep(0.2)
+            nap(0.2)
         return "miss"
 
     def mine_one(self):
@@ -1193,6 +1564,7 @@ class RockLoop:
     # ---------------------------------------------------------------- ลูปหลัก
     def setup(self):
         self.frame()
+        self.cam.ensure()
         log(f"เวลาในเกมตอนเริ่ม: {self._tstr} ช่วง={self.period} (แหล่ง {self._src})")
         if not self.search_pt:
             c = self.nav.read_stable()
@@ -1243,6 +1615,9 @@ class ImageDevice(Device):
         self.last = self.fixed
         return self.fixed
 
+    def camera_available(self):
+        return False
+
 
 # =============================================================================
 # คำสั่งเสริม
@@ -1250,9 +1625,10 @@ class ImageDevice(Device):
 def countdown(sec, msg):
     log(msg)
     for s in range(sec, 0, -1):
-        print(f"  เริ่มใน {s}...   ", end="\r", flush=True)
-        time.sleep(1)
-    print()
+        sys.stdout.write(f"\r{time.strftime('%H:%M:%S')}  เริ่มใน {s} วินาที...   ")
+        sys.stdout.flush()
+        nap(1)
+    sys.stdout.write("\r\n")
 
 
 def cmd_calibrate(args):
@@ -1303,24 +1679,94 @@ def cmd_test_input(args):
     dev = Device(dry=args.dry)
     ok, who = dev.root_ok()
     log(f"รูท: {'OK' if ok else 'ไม่ใช่ -> ' + who}")
+    install_stop_handlers()
     countdown(5, "สลับเข้าเกมแล้วรอ (ตัวละครอย่าอยู่ใกล้มอน)")
     a = dev.grab()
     if a is None:
         sys.exit("จับภาพไม่ได้")
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    if args.what == "camera":
+        global CAM_DRAG_MS
+        TOUCH_BACKEND["camera"] = args.backend
+        CAM_DRAG_MS = args.ms
+        cam = Camera(dev)
+        log(f"ทดสอบกล้อง: วิธี {args.backend} ลาก {args.ms}ms (ลากซ้าย-ขวา-ซ้าย แล้ววัดว่าฉากขยับกี่ px)")
+        cv2.imwrite(os.path.join(DEBUG_DIR, "camera_before.png"), a.img)
+        good = cam.try_calibrate()
+        b = dev.grab()
+        cv2.imwrite(os.path.join(DEBUG_DIR, "camera_after.png"), b.img)
+        if good:
+            cam.save()
+            log(f"✅ กล้องหมุนได้ (ลาก 100px -> ฉากขยับ {cam.ratio * 100:+.0f}px) บันทึกค่าแล้ว ใช้ `run` ได้เลย")
+        else:
+            log("❌ กล้องไม่หมุน ลอง: python rock_loop.py camera-cal   (ลองทุกวิธีให้อัตโนมัติ)")
+        return
     if args.what == "joystick":
         dev.joystick(0, -1, 1500)
-    elif args.what == "hold":
-        dev.hold(*a.A("sword"), 1500)
     else:
-        if not dev.camera_available():
-            TOUCH_BACKEND["camera"] = args.backend
-        dev.camera_drag(-300, 0, 500)
-    time.sleep(1.0)
+        dev.hold(*a.A("sword"), 1500)
+    nap(1.0)
     b = dev.grab()
-    os.makedirs(DEBUG_DIR, exist_ok=True)
     cv2.imwrite(os.path.join(DEBUG_DIR, f"{args.what}_before.png"), a.img)
     cv2.imwrite(os.path.join(DEBUG_DIR, f"{args.what}_after.png"), b.img)
-    log(f"ภาพต่างกัน {frame_diff(a.img, b.img):.1f} (เกิน ~6 = ฉากขยับ/กล้องหมุนจริง) เซฟภาพก่อน-หลังใน debug/")
+    log(f"ภาพต่างกัน {frame_diff(a.img, b.img):.1f} (เกิน ~6 = ฉากขยับจริง) เซฟภาพก่อน-หลังใน debug/")
+
+
+def cmd_camera_cal(args):
+    dev = Device(dry=args.dry)
+    ok, who = dev.root_ok()
+    log(f"รูท: {'OK' if ok else 'ไม่ใช่ -> ' + who}")
+    install_stop_handlers()
+    countdown(5, "สลับเข้าเกมแล้วรอ (ยืนในที่โล่ง ให้เห็นฉากไกล/ท้องฟ้า)")
+    cam = Camera(dev)
+    if dev.grab() is None:
+        sys.exit("จับภาพไม่ได้")
+    cam.calibrate()
+
+
+def cmd_stop(args):
+    open(STOP_FILE, "w").close()
+    log(f"ส่งคำสั่งหยุดแล้ว ({STOP_FILE}) บอทที่กำลังรันจะหยุดภายในไม่กี่วินาที")
+
+
+def cmd_doctor(args):
+    """ตรวจทุกอย่างทีเดียว: root / tesseract / จับภาพ / อ่านเวลา-พิกัด-ชื่อ -> บอกว่าอะไรพัง"""
+    log("--- ตรวจระบบ ---")
+    log(f"pytesseract: {'มี' if pytesseract else 'ไม่มี  -> pip install pytesseract'}")
+    tb = shutil.which("tesseract")
+    log(f"tesseract โปรแกรม: {tb or 'ไม่พบ  -> pkg install tesseract (Termux) / apt install tesseract-ocr'}")
+    if tb:
+        try:
+            v = subprocess.run([tb, "--version"], capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+            log("tesseract รุ่น: " + (v.stdout or v.stderr).decode("utf-8", "ignore").splitlines()[0])
+        except Exception as e:
+            log(f"tesseract รันไม่ได้: {e}")
+    if args.image:
+        raw = cv2.imread(args.image)
+        if raw is None:
+            sys.exit(f"เปิดไฟล์ภาพไม่ได้: {args.image}")
+        fr = Frame(cv2.resize(raw, (REF_W, REF_H)), raw.shape[:2], True) if args.landscape else make_frame(raw)
+    else:
+        dev = Device(dry=args.dry)
+        ok, who = dev.root_ok()
+        log(f"รูท (su): {'OK' if ok else 'ไม่ใช่ -> ' + who}")
+        fr = dev.grab()
+        if fr is None:
+            sys.exit("จับภาพไม่ได้ (screencap ผ่าน su ใช้ไม่ได้)")
+        log(f"จับภาพได้ {fr.raw_shape[1]}x{fr.raw_shape[0]} -> แนวนอน {fr.w}x{fr.h}")
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    clk = ClockReader()
+    got = clk._ocr(fr)
+    log(f"นาฬิกา: อ่านได้ {[fmt_min(m) for m in got][:6]} เลย์เอาต์ที่ใช้ได้={_LAST_LAYOUT[0]}")
+    log(f"พิกัด: {read_coords_once(fr)}")
+    bar = read_target_bar(fr)
+    log(f"แถบเป้าหมาย: ขึ้น={bar['engaged']} ชื่อ='{read_target_name(fr, bar)}'")
+    for lay in ("A", "B"):
+        for k in ("clock", "coords"):
+            roi = fr.crop(LAYOUT_ROI[lay][k])
+            if roi.size:
+                cv2.imwrite(os.path.join(DEBUG_DIR, f"doctor_{k}_{lay}.png"), cv2.resize(roi, None, fx=4, fy=4))
+    log(f"เซฟภาพโซนอ่านเวลา/พิกัดไว้ที่ {DEBUG_DIR}/doctor_*.png (ถ้ากรอบไม่ตรงตัวเลข ใช้ --layout A|B หรือแก้ LAYOUT_ROI)")
 
 
 def main():
@@ -1338,15 +1784,42 @@ def main():
     c.add_argument("--dry", action="store_true")
     t = sub.add_parser("test-input")
     t.add_argument("what", choices=["joystick", "hold", "camera"])
-    t.add_argument("--backend", choices=["input", "sendevent"], default="sendevent")
+    t.add_argument("--backend", choices=["input", "sendevent"], default="input")
+    t.add_argument("--ms", type=int, default=380, help="ลากนานกี่ ms (กล้อง)")
     t.add_argument("--dry", action="store_true")
+    cc = sub.add_parser("camera-cal")
+    cc.add_argument("--dry", action="store_true")
+    sub.add_parser("stop")
+    dr = sub.add_parser("doctor")
+    dr.add_argument("--image")
+    dr.add_argument("--landscape", action="store_true")
+    dr.add_argument("--dry", action="store_true")
+    for sp in (r, c, t, cc, dr):
+        sp.add_argument("--layout", choices=["auto", "A", "B"], default=None, help="ตำแหน่ง HUD: A=ซ้ายบน B=ขวาบน/ใต้มินิแมพ (ค่าเริ่มต้น auto)")
     args = ap.parse_args()
-
+    global LAYOUT
+    if getattr(args, "layout", None):
+        LAYOUT = args.layout
+    if args.cmd == "stop":
+        cmd_stop(args)
+        return
+    if args.cmd == "doctor":
+        cmd_doctor(args)
+        return
+    if args.cmd == "camera-cal":
+        try:
+            cmd_camera_cal(args)
+        except Stop as e:
+            log(f"[หยุด] {e}")
+        return
     if args.cmd == "calibrate":
         cmd_calibrate(args)
         return
     if args.cmd == "test-input":
-        cmd_test_input(args)
+        try:
+            cmd_test_input(args)
+        except Stop as e:
+            log(f"[หยุด] {e}")
         return
     if args.image:
         raw = cv2.imread(args.image)
@@ -1361,9 +1834,10 @@ def main():
         log("เตือน: ไม่พบ pytesseract/tesseract -> อ่านชื่อแร่/นาฬิกา/พิกัดไม่ได้ (บอทจะเดินตามพิกัดไม่ได้)")
     profiles = load_profiles()
     bot = RockLoop(dev, profiles, args.period)
-    if not (args.no_countdown or args.image):
-        countdown(COUNTDOWN_SEC, "สลับเข้าเกม Utopia: Origin ได้เลย!")
+    install_stop_handlers()
     try:
+        if not (args.no_countdown or args.image):
+            countdown(COUNTDOWN_SEC, "สลับเข้าเกม Utopia: Origin ได้เลย!")
         bot.run(args.max_rounds)
     except Stop as e:
         log(f"[หยุด] {e}")
