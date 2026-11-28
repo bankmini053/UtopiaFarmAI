@@ -128,6 +128,8 @@ PICK_WAIT = 0.4               # กดปุ่มมือแล้วรอก
 PICK_TRIES = 8                # กดปุ่มมือ/หา Pick All ซ้ำกี่รอบ
 CAM_SCAN_SLICES = 6           # มองหาหิน: หมุนรอบตัวแบ่งกี่ช่วง (6 = ช่วงละ 60°) ซ้าย -> เช็กภาพ -> ซ้าย -> เช็กภาพ
 CAM_SCAN_SHIFT = 850          # ฉากต้องเลื่อนกี่ px ต่อ 1 ช่วง (ประมาณ 60°) ปรับด้วย run --scan-shift
+SWEEP_STEPS = 5               # เดินติด: หมุนกล้องไปขวาทีละนิดกี่ก้าวเพื่อดูว่าชิดหินแล้วหรือยัง (แล้วหมุนกลับที่เดิม)
+SWEEP_STEP_PX = 90            # ก้าวละกี่ px ของฉาก
 LOCK_RADIUS = 200             # ล็อกเป้า: หินก้อนเดิมต้องอยู่ห่างจากตำแหน่งที่ติดตามไว้ไม่เกินนี้ (px อ้างอิง) ไม่งั้นนับว่าเสียเป้า ไม่สลับไปก้อนอื่น
 ALIGN_IN = 0.6                # หมุนกล้องจนหินห่างกลางจอไม่เกิน (CAM_CENTER_BAND x ค่านี้)
 ALIGN_OUT = 1.3               # หินเยื้องเกิน (CAM_CENTER_BAND x ค่านี้) ถึงจะหมุนกล้องใหม่ (กันหมุนส่ายซ้ายขวา)
@@ -2055,6 +2057,34 @@ class RockLoop:
         feet = fr.A("char_feet")
         return {"base": feet, "bbox": (feet[0] - 40, feet[1] - 80, 80, 80), "area": 0, "dist": 0.0, "near": True}
 
+    def sweep_near(self):
+        """เดินไม่ขยับ: หมุนกล้องไปทางขวาทีละนิด ดูว่ามีหินชิดตัวละครไหม (บางทีหินอยู่ข้างตัว/ถูกบัง) แล้วหมุนกลับจุดเดิม
+        คืน frame ที่ชิดหิน หรือ None ถ้าไม่ชิดหินเลย (คือติดสิ่งกีดขวางจริง)"""
+        if not self.cam.ok:
+            return None
+        ui("👀 เดินไม่ขยับ → ส่ายกล้องขวาดูว่าชิดหินไหม")
+        total, hit = 0.0, None
+        for i in range(SWEEP_STEPS):
+            sh = self.cam.turn_by(-SWEEP_STEP_PX)
+            total += sh or 0.0
+            fr = self.frame()
+            feet = fr.A("char_feet")
+            rr, _ = find_rocks(fr, self.names, self.profiles)
+            close = [r for r in rr if math.hypot(r["base"][0] - feet[0], r["base"][1] - feet[1]) <= NEAR_TRUST_DIST * fr.sy]
+            np_ = self.near_pixels(fr)
+            log(f"[ส่าย] ก้าว {i + 1}: หินใกล้ {len(close)} พิกเซลหิน {np_:.0f}")
+            if close and np_ >= NEAR_PIX:
+                hit = fr
+                break
+        if abs(total) > 8:
+            self.cam.turn_by(-total)                            # หมุนกลับที่เดิม
+            nap(0.2)
+        if hit is not None:
+            ui("📍 ชิดหินแล้ว (เจอตอนส่ายกล้อง)")
+            return self.frame()
+        ui("🧱 ไม่ชิดหิน = มีของขวางจริง")
+        return None
+
     def unstick(self, n, off):
         """ติดต้นไม้/หิน/พุ่มไม้: เบี่ยงข้างสลับซ้ายขวา เดินอ้อม ถ้ายังติดถอยหลังก่อน ติดเกิน UNSTICK_MAX = ยอมแพ้ก้อนนี้"""
         if n >= UNSTICK_MAX:
@@ -2150,6 +2180,9 @@ class RockLoop:
             if not moved or no_prog >= 3:
                 blocked += 1
                 no_prog = 0
+                fr_n = self.sweep_near()
+                if fr_n is not None:
+                    return self._arrived(fr_n)
                 if not self.unstick(blocked, off):
                     return None
                 last_dist = None
